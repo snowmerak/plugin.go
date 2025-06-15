@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/gob"
 	"fmt"
 	"io"
 	"log"
@@ -13,23 +12,6 @@ import (
 
 	"github.com/snowmerak/plugin.go/lib/multiplexer"
 )
-
-// gobEncode is a helper function to GOB-encode a value.
-func gobEncode(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(v); err != nil {
-		return nil, fmt.Errorf("gob encode error: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
-// gobDecode is a helper function to GOB-decode data into a value.
-func gobDecode(data []byte, v any) error {
-	if err := gob.NewDecoder(bytes.NewReader(data)).Decode(v); err != nil {
-		return fmt.Errorf("gob decode error: %w", err)
-	}
-	return nil
-}
 
 type Header struct {
 	Name    string
@@ -116,14 +98,14 @@ func (h *Header) UnmarshalBinary(data []byte) error {
 
 // AppHandlerResult holds the result of an application handler execution.
 type AppHandlerResult struct {
-	Payload []byte // GOB-encoded payload
-	IsError bool   // True if Payload is a GOB-encoded error message string
+	Payload []byte // Raw payload
+	IsError bool   // True if Payload is an error payload
 }
 
 // Handler defines the function signature for registered handlers.
-// It returns the GOB-encoded payload (either success data or error string)
+// It returns the raw payload (either success data or error data)
 // and a boolean indicating if it's an error payload.
-// The second error return is for critical errors within the wrapper itself (e.g., GOB encoding failure).
+// The second error return is for critical errors within the wrapper itself.
 type Handler func(requestPayload []byte) (AppHandlerResult, error)
 
 type Module struct {
@@ -149,7 +131,7 @@ func New(reader io.Reader, writer io.Writer) *Module {
 	}
 }
 
-func RegisterHandler[Req, Res any](m *Module, name string, handler func(Req) (Res, error)) {
+func RegisterHandler(m *Module, name string, handler func(requestPayload []byte) (responsePayload []byte, isAppError bool)) {
 	m.handlerLock.Lock()
 	defer m.handlerLock.Unlock()
 
@@ -158,33 +140,14 @@ func RegisterHandler[Req, Res any](m *Module, name string, handler func(Req) (Re
 	}
 
 	m.handler[name] = func(requestPayload []byte) (AppHandlerResult, error) {
-		var req Req
-		if err := gobDecode(requestPayload, &req); err != nil {
-			errMsg := fmt.Sprintf("failed to decode request for %s: %v", name, err)
-			errPayload, encErr := gobEncode(errMsg)
-			if encErr != nil {
-				// This is a critical error, as we can't even encode the decode error.
-				return AppHandlerResult{}, fmt.Errorf("critical: failed to encode request decode error message: %w", encErr)
-			}
-			return AppHandlerResult{Payload: errPayload, IsError: true}, nil
-		}
+		// The user-provided handler now directly processes []byte and returns []byte.
+		// No GOB decoding of request or GOB encoding of response/error is done here.
 
-		res, appErr := handler(req)
-		if appErr != nil {
-			// Application-level error from the handler
-			errPayload, encErr := gobEncode(appErr.Error())
-			if encErr != nil {
-				return AppHandlerResult{}, fmt.Errorf("critical: failed to encode application error message: %w", encErr)
-			}
-			return AppHandlerResult{Payload: errPayload, IsError: true}, nil
-		}
+		responseBytes, isErr := handler(requestPayload)
 
-		// Success
-		successPayload, encErr := gobEncode(res)
-		if encErr != nil {
-			return AppHandlerResult{}, fmt.Errorf("critical: failed to encode success response: %w", encErr)
-		}
-		return AppHandlerResult{Payload: successPayload, IsError: false}, nil
+		// The 'error' returned by this function is for critical errors within this wrapper itself,
+		// which are now minimal as GOB processing is removed.
+		return AppHandlerResult{Payload: responseBytes, IsError: isErr}, nil
 	}
 }
 
@@ -212,29 +175,19 @@ func (m *Module) Listen(ctx context.Context) error {
 
 		if !exists {
 			errMsg := fmt.Sprintf("no handler registered for service: %s", requestHeader.Name)
-			errPayload, encErr := gobEncode(errMsg)
-			if encErr != nil {
-				// Log this critical internal error, as we can't send it back easily.
-				log.Printf("critical: failed to encode 'handler not found' error for %s: %v", requestHeader.Name, encErr)
-				// Potentially continue to next message or stop module if this is considered fatal.
-				// For now, let's try to continue to the next message.
-				continue
-			}
+			// No GOB encoding for error messages
+			errPayload := []byte(errMsg)
+			// encErr is removed as direct []byte conversion does not fail here.
 			responseHeader.IsError = true
 			responseHeader.Payload = errPayload
 		} else {
 			appResult, criticalErr := targetHandler(requestHeader.Payload)
 			if criticalErr != nil {
-				// A critical error occurred within the handler wrapper (e.g., GOB encoding its own result failed).
-				// Log this and decide how to proceed. Sending a generic error back might be an option.
 				log.Printf("critical error in handler for %s: %v", requestHeader.Name, criticalErr)
-				// For now, let's try to inform the client if possible.
 				errMsg := fmt.Sprintf("critical internal error processing request for %s: %v", requestHeader.Name, criticalErr)
-				errPayload, encErr := gobEncode(errMsg)
-				if encErr != nil {
-					log.Printf("super critical: failed to encode critical error message for %s: %v", requestHeader.Name, encErr)
-					continue // Give up on this request
-				}
+				// No GOB encoding for error messages
+				errPayload := []byte(errMsg)
+				// encErr is removed
 				responseHeader.IsError = true
 				responseHeader.Payload = errPayload
 			} else {

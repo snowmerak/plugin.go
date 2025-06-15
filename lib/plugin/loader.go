@@ -139,7 +139,12 @@ func (l *Loader) Close() error {
 	return closeErr
 }
 
-func Call[Req, Res any](ctx context.Context, l *Loader, name string, request Req) (*Res, error) {
+// Call sends a request to the loaded plugin and waits for a response.
+// The request and response are raw byte slices.
+// It returns the response payload as []byte. If the plugin indicates an error,
+// this error is returned, with the error message being the string representation
+// of the plugin's error payload.
+func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([]byte, error) {
 	if l.closed.Load() {
 		return nil, fmt.Errorf("loader is closed")
 	}
@@ -148,15 +153,12 @@ func Call[Req, Res any](ctx context.Context, l *Loader, name string, request Req
 		return nil, fmt.Errorf("loader not loaded or load failed")
 	}
 
-	requestPayloadBytes, err := gobEncode(request)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode request: %w", err)
-	}
+	// requestPayload is already []byte, no gobEncode needed.
 
 	requestHeader := Header{
 		Name:    name,
 		IsError: false,
-		Payload: requestPayloadBytes,
+		Payload: requestPayload, // Use requestPayload directly
 	}
 
 	headerData, err := requestHeader.MarshalBinary()
@@ -171,7 +173,7 @@ func Call[Req, Res any](ctx context.Context, l *Loader, name string, request Req
 		return nil, fmt.Errorf("loader closed before dispatching request")
 	}
 
-	requestID := l.requestID.Add(1) // This will be uint32
+	requestID := l.requestID.Add(1)
 	responseChan := make(chan []byte, 1)
 	l.pendingRequests[requestID] = responseChan
 	l.requestMutex.Unlock()
@@ -180,7 +182,6 @@ func Call[Req, Res any](ctx context.Context, l *Loader, name string, request Req
 		l.requestMutex.Lock()
 		delete(l.pendingRequests, requestID)
 		l.requestMutex.Unlock()
-		// Don't close the channel here - let the read goroutine handle it
 	}()
 
 	if err := l.multiplexer.WriteMessageWithSequence(ctx, requestID, headerData); err != nil {
@@ -199,18 +200,14 @@ func Call[Req, Res any](ctx context.Context, l *Loader, name string, request Req
 		}
 
 		if responseHeader.IsError {
-			var errMsg string
-			if err := gobDecode(responseHeader.Payload, &errMsg); err != nil {
-				return nil, fmt.Errorf("failed to decode error message from plugin (service: %s): %w", name, err)
-			}
+			// The payload is the error data from the plugin, treat as string.
+			// No gobDecode needed for errMsg.
+			errMsg := string(responseHeader.Payload)
 			return nil, fmt.Errorf("plugin error for service %s: %s", name, errMsg)
 		}
 
-		var actualResponse Res
-		if err := gobDecode(responseHeader.Payload, &actualResponse); err != nil {
-			return nil, fmt.Errorf("failed to decode response for service %s: %w", name, err)
-		}
-		return &actualResponse, nil
+		// The payload is the success data. No gobDecode needed.
+		return responseHeader.Payload, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-l.loadCtx.Done():
