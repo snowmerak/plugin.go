@@ -7,6 +7,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sync"
 
@@ -214,10 +215,9 @@ func (m *Module) Listen(ctx context.Context) error {
 			errPayload, encErr := gobEncode(errMsg)
 			if encErr != nil {
 				// Log this critical internal error, as we can't send it back easily.
-				// log.Printf("critical: failed to encode 'handler not found' error for %s: %v", requestHeader.Name, encErr)
+				log.Printf("critical: failed to encode 'handler not found' error for %s: %v", requestHeader.Name, encErr)
 				// Potentially continue to next message or stop module if this is considered fatal.
 				// For now, let's try to continue to the next message.
-				fmt.Fprintf(os.Stderr, "critical: failed to encode 'handler not found' error for %s: %v\n", requestHeader.Name, encErr)
 				continue
 			}
 			responseHeader.IsError = true
@@ -227,12 +227,12 @@ func (m *Module) Listen(ctx context.Context) error {
 			if criticalErr != nil {
 				// A critical error occurred within the handler wrapper (e.g., GOB encoding its own result failed).
 				// Log this and decide how to proceed. Sending a generic error back might be an option.
-				// log.Printf("critical error in handler for %s: %v", requestHeader.Name, criticalErr)
+				log.Printf("critical error in handler for %s: %v", requestHeader.Name, criticalErr)
 				// For now, let's try to inform the client if possible.
 				errMsg := fmt.Sprintf("critical internal error processing request for %s: %v", requestHeader.Name, criticalErr)
 				errPayload, encErr := gobEncode(errMsg)
 				if encErr != nil {
-					fmt.Fprintf(os.Stderr, "super critical: failed to encode critical error message for %s: %v\n", requestHeader.Name, encErr)
+					log.Printf("super critical: failed to encode critical error message for %s: %v", requestHeader.Name, encErr)
 					continue // Give up on this request
 				}
 				responseHeader.IsError = true
@@ -245,14 +245,12 @@ func (m *Module) Listen(ctx context.Context) error {
 
 		responseData, err := responseHeader.MarshalBinary()
 		if err != nil {
-			// log.Printf("failed to encode response header for %s: %v", responseHeader.Name, err)
-			fmt.Fprintf(os.Stderr, "failed to encode response header for %s: %v\n", responseHeader.Name, err)
+			log.Printf("failed to encode response header for %s: %v", responseHeader.Name, err)
 			continue // Try to process next message
 		}
 
 		if err := m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData); err != nil {
-			// log.Printf("failed to write response for %s: %v", responseHeader.Name, err)
-			fmt.Fprintf(os.Stderr, "failed to write response for %s: %v\n", responseHeader.Name, err)
+			log.Printf("failed to write response for %s: %v", responseHeader.Name, err)
 			// This could be a more serious issue, potentially return err to stop Listen
 			return fmt.Errorf("failed to write response for %s: %w", responseHeader.Name, err)
 		}
