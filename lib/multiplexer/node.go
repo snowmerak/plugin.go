@@ -192,7 +192,7 @@ func (n *Node) write(mesgType uint8, frameID uint64, data []byte) error {
 	return nil
 }
 
-func (n *Node) WriteResponseMessage(ctx context.Context, seq uint64, data []byte) error {
+func (n *Node) WriteMessageWithSequence(ctx context.Context, seq uint64, data []byte) error {
 	done := ctx.Done()
 
 	if err := n.write(MessageHeaderTypeStart, seq, data); err != nil {
@@ -243,8 +243,8 @@ func (n *Node) WriteResponseMessage(ctx context.Context, seq uint64, data []byte
 	return nil
 }
 
-func (n *Node) WriteRequestMessage(ctx context.Context, data []byte) error {
-	if err := n.WriteResponseMessage(ctx, n.sequence.Add(1), data); err != nil {
+func (n *Node) WriteMessage(ctx context.Context, data []byte) error {
+	if err := n.WriteMessageWithSequence(ctx, n.sequence.Add(1), data); err != nil {
 		return fmt.Errorf("failed to write request message: %w", err)
 	}
 
