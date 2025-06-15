@@ -244,7 +244,7 @@ func (n *Node) WriteResponseMessage(ctx context.Context, seq uint64, data []byte
 }
 
 func (n *Node) WriteRequestMessage(ctx context.Context, data []byte) error {
-	if err := n.write(MessageHeaderTypeStart, n.sequence.Add(1), data); err != nil {
+	if err := n.WriteResponseMessage(ctx, n.sequence.Add(1), data); err != nil {
 		return fmt.Errorf("failed to write request message: %w", err)
 	}
 
