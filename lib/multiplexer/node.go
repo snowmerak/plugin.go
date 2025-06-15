@@ -14,9 +14,9 @@ type Node struct {
 
 	writerLock *sync.Mutex
 
-	readBuffer map[uint64]*Message
+	readBuffer map[uint32]*Message // Changed uint64 to uint32
 
-	sequence atomic.Uint64
+	sequence atomic.Uint32 // Changed atomic.Uint64 to atomic.Uint32
 }
 
 func NewNode(reader io.Reader, writer io.Writer) *Node {
@@ -24,7 +24,7 @@ func NewNode(reader io.Reader, writer io.Writer) *Node {
 		reader:     reader,
 		writer:     writer,
 		writerLock: &sync.Mutex{},
-		readBuffer: make(map[uint64]*Message),
+		readBuffer: make(map[uint32]*Message), // Changed uint64 to uint32
 	}
 }
 
@@ -44,7 +44,7 @@ const (
 )
 
 type Message struct {
-	ID   uint64
+	ID   uint32 // Changed uint64 to uint32
 	Data []byte
 	Type uint8
 }
@@ -82,7 +82,7 @@ func (n *Node) ReadMessage(ctx context.Context) (chan *Message, error) {
 				}
 
 				msgType := temp[0]
-				frameID := uint64(temp[1])<<24 | uint64(temp[2])<<16 | uint64(temp[3])<<8 | uint64(temp[4])
+				frameID := uint32(temp[1])<<24 | uint32(temp[2])<<16 | uint32(temp[3])<<8 | uint32(temp[4]) // Changed to uint32
 				dataLength := uint64(temp[5])<<24 | uint64(temp[6])<<16 | uint64(temp[7])<<8 | uint64(temp[8])
 
 				if len(buffer) < int(dataLength) {
@@ -149,7 +149,7 @@ func (n *Node) ReadMessage(ctx context.Context) (chan *Message, error) {
 	return ch, nil
 }
 
-func (n *Node) write(mesgType uint8, frameID uint64, data []byte) error {
+func (n *Node) write(mesgType uint8, frameID uint32, data []byte) error { // Changed frameID to uint32
 	n.writerLock.Lock()
 	defer n.writerLock.Unlock()
 	if n.writer == nil {
@@ -192,7 +192,7 @@ func (n *Node) write(mesgType uint8, frameID uint64, data []byte) error {
 	return nil
 }
 
-func (n *Node) WriteMessageWithSequence(ctx context.Context, seq uint64, data []byte) error {
+func (n *Node) WriteMessageWithSequence(ctx context.Context, seq uint32, data []byte) error { // Changed seq to uint32
 	done := ctx.Done()
 
 	if err := n.write(MessageHeaderTypeStart, seq, data); err != nil {

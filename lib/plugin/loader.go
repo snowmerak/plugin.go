@@ -18,9 +18,9 @@ type Loader struct {
 	process     *process.Process
 	multiplexer *multiplexer.Node
 
-	requestID atomic.Uint64
+	requestID atomic.Uint32 // Changed atomic.Uint64 to atomic.Uint32
 
-	pendingRequests map[uint64]chan []byte
+	pendingRequests map[uint32]chan []byte // Changed uint64 to uint32
 	requestMutex    sync.RWMutex
 
 	loadCtx    context.Context
@@ -36,7 +36,7 @@ func NewLoader(path, name, version string) *Loader {
 		Version:         version,
 		process:         nil,
 		multiplexer:     nil,
-		pendingRequests: make(map[uint64]chan []byte),
+		pendingRequests: make(map[uint32]chan []byte), // Changed uint64 to uint32
 		// wg is initialized to its zero value, which is ready to use.
 	}
 }
@@ -93,7 +93,7 @@ func (l *Loader) Load(ctx context.Context) error {
 					return
 				}
 
-				requestID := mesg.ID
+				requestID := mesg.ID // mesg.ID is now uint32
 
 				l.requestMutex.RLock()
 				responseChan, exists := l.pendingRequests[requestID]
@@ -171,7 +171,7 @@ func Call[Req, Res any](ctx context.Context, l *Loader, name string, request Req
 		return nil, fmt.Errorf("loader closed before dispatching request")
 	}
 
-	requestID := l.requestID.Add(1)
+	requestID := l.requestID.Add(1) // This will be uint32
 	responseChan := make(chan []byte, 1)
 	l.pendingRequests[requestID] = responseChan
 	l.requestMutex.Unlock()

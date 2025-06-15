@@ -197,10 +197,10 @@ func (m *Module) Listen(ctx context.Context) error {
 	for mesg := range recv {
 		var requestHeader Header
 		if err := requestHeader.UnmarshalBinary(mesg.Data); err != nil {
-			// Cannot reliably form a response if header is malformed. Log and continue or stop.
-			// For now, returning error stops the listener.
-			// Consider logging: log.Printf("failed to decode header: %v, message ID: %d", err, mesg.ID)
-			return fmt.Errorf("failed to decode header: %w", err) // This stops the module
+			// Cannot reliably form a response if header is malformed. Log and continue.
+			log.Printf("failed to decode header: %v, message ID: %d. Skipping message.", err, mesg.ID)
+			// return fmt.Errorf("failed to decode header: %w", err) // This stops the module
+			continue // Continue to the next message
 		}
 
 		m.handlerLock.RLock()
