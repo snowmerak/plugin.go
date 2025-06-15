@@ -9,8 +9,8 @@ import (
 )
 
 type Node struct {
-	reader *io.PipeReader
-	writer *io.PipeWriter
+	reader io.Reader
+	writer io.Writer
 
 	writerLock *sync.Mutex
 
@@ -19,7 +19,7 @@ type Node struct {
 	sequence atomic.Uint64
 }
 
-func NewNode(reader *io.PipeReader, writer *io.PipeWriter) *Node {
+func NewNode(reader io.Reader, writer io.Writer) *Node {
 	return &Node{
 		reader:     reader,
 		writer:     writer,
