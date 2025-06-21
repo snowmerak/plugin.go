@@ -313,16 +313,15 @@ func (m *Module) Listen(ctx context.Context) error {
 		return fmt.Errorf("failed to read message: %w", err)
 	}
 
-	// Create a context that gets cancelled on shutdown or parent context cancellation
+	// Create a context that gets cancelled on force shutdown or parent context cancellation
 	listenCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Monitor for shutdown signal
+	// Monitor for FORCE shutdown signal only (graceful shutdown is handled in message loop)
 	go func() {
 		select {
-		case <-m.shutdownChan:
-			cancel()
 		case <-m.forceShutdownChan:
+			fmt.Fprintf(os.Stderr, "Plugin: Force shutdown signal detected, cancelling context\n")
 			cancel()
 		case <-ctx.Done():
 			cancel()
