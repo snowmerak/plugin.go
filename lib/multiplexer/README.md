@@ -1,6 +1,6 @@
 # Multiplexer Package
 
-고성능 메시지 멀티플렉싱 라이브러리
+High-performance message multiplexing library
 
 ## 🚀 Quick Start
 
@@ -14,14 +14,14 @@ import (
 )
 
 func main() {
-    // 자동 최적화 모드 (권장)
+    // Auto-optimization mode (recommended)
     reader := &bytes.Buffer{}
     writer := &bytes.Buffer{}
     
     mux := multiplexer.New(reader, writer)
     defer mux.Close()
     
-    // 메시지 전송
+    // Send message
     ctx := context.Background()
     data := []byte("Hello, World!")
     err := mux.WriteMessage(ctx, 1, data)
@@ -29,7 +29,7 @@ func main() {
         panic(err)
     }
     
-    // 메시지 수신
+    // Receive message
     message, err := mux.ReadMessage(ctx)
     if err != nil {
         panic(err)
@@ -39,35 +39,35 @@ func main() {
 }
 ```
 
-## 📊 성능 특성
+## 📊 Performance Characteristics
 
-| 메시지 크기 | 성능 향상 | 메모리 절약 | 권장 용도 |
+| Message Size | Performance Improvement | Memory Savings | Recommended Use |
 |------------|----------|-------------|-----------|
-| < 8KB | 기본 성능 | - | API 응답, IoT 데이터 |
-| 8KB - 64KB | +9.3% | 59% | 파일 청크, 이미지 |
-| > 64KB | +39% | 90% | 대용량 파일, 스트리밍 |
+| < 8KB | Baseline | - | API responses, IoT data |
+| 8KB - 64KB | +9.3% | 59% | File chunks, images |
+| > 64KB | +39% | 90% | Large files, streaming |
 
-## 🎯 사용 시나리오
+## 🎯 Usage Scenarios
 
-### IoT/센서 데이터
+### IoT/Sensor Data
 ```go
 mux := multiplexer.NewOptimized(reader, writer, multiplexer.OptimizeFor.SmallMessages)
 ```
 
-### 파일 전송
+### File Transfer
 ```go
 mux := multiplexer.NewOptimized(reader, writer, multiplexer.OptimizeFor.LargeMessages)
 ```
 
-### 범용 (자동 최적화)
+### General Purpose (Auto-optimization)
 ```go
-mux := multiplexer.New(reader, writer) // 권장
+mux := multiplexer.New(reader, writer) // Recommended
 ```
 
-## 🔧 고급 설정
+## 🔧 Advanced Configuration
 
 ```go
-// 커스텀 임계값 설정
+// Custom threshold configuration
 mux := multiplexer.NewWithConfig(reader, writer, multiplexer.Config{
     Threshold: 16 * 1024, // 16KB
     BufferSize: 64 * 1024, // 64KB
@@ -75,29 +75,29 @@ mux := multiplexer.NewWithConfig(reader, writer, multiplexer.Config{
 })
 ```
 
-## ⚡ 성능 최적화 팁
+## ⚡ Performance Optimization Tips
 
-1. **작은 메시지 (< 8KB)**: 기본 모드가 최적
-2. **큰 메시지 (> 8KB)**: 자동으로 최적화됨
-3. **메모리 제약 환경**: 하이브리드 모드 권장
-4. **처리량 우선**: 대용량 전용 모드 고려
+1. **Small messages (< 8KB)**: Default mode is optimal
+2. **Large messages (> 8KB)**: Automatically optimized
+3. **Memory-constrained environments**: Hybrid mode recommended
+4. **Throughput priority**: Consider large-only mode
 
-## 📈 벤치마크 결과
+## 📈 Benchmark Results
 
 ```bash
-# 벤치마크 실행
+# Run benchmark
 go test -bench=BenchmarkComparison -benchmem
 
-# 결과 예시:
+# Example results:
 # BenchmarkComparison/Original_1KB-12     16589593    73.41 ns/op    48 B/op    3 allocs/op
 # BenchmarkComparison/Hybrid_64KB-12        667698   1803 ns/op    432 B/op   18 allocs/op  
 # BenchmarkComparison/Hybrid_1024KB-12       47683  26139 ns/op   1639 B/op   66 allocs/op
 ```
 
-## 🛡️ 안전성
+## 🛡️ Safety
 
-- ✅ 동시성 안전 (Goroutine-safe)
-- ✅ 메모리 오버플로우 방지 (10MB 제한)
-- ✅ 컨텍스트 취소 지원
-- ✅ 자동 리소스 정리
-- ✅ 종합 테스트 커버리지
+- ✅ Concurrency Safe (Goroutine-safe)
+- ✅ Memory Overflow Prevention (10MB limit)
+- ✅ Context Cancellation Support
+- ✅ Automatic Resource Cleanup
+- ✅ Comprehensive Test Coverage
