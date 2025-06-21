@@ -321,7 +321,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Echo Plugin: 시작됨")
 
 	// stdin/stdout을 통해 호스트와 통신하는 모듈 생성
-	module := plugin.New(os.Stdin, os.Stdout)
+	module := plugin.NewStd()
 
 	// JSON 직렬화/역직렬화 함수 정의
 	unmarshalReq := func(data []byte) (EchoRequest, error) {
@@ -426,7 +426,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Calculator Plugin: 시작됨")
 
 	// stdin/stdout을 통해 호스트와 통신하는 모듈 생성
-	module := plugin.New(os.Stdin, os.Stdout)
+	module := plugin.NewStd()
 
 	// JSON 직렬화/역직렬화 함수 정의
 	unmarshalReq := func(data []byte) (CalculateRequest, error) {

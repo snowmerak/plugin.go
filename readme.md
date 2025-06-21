@@ -321,7 +321,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Echo Plugin: Started")
 
 	// Create module that communicates with host via stdin/stdout
-	module := plugin.New(os.Stdin, os.Stdout)
+	module := plugin.NewStd()
 
 	// Define JSON serialization/deserialization functions
 	unmarshalReq := func(data []byte) (EchoRequest, error) {
@@ -426,7 +426,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Calculator Plugin: Started")
 
 	// Create module that communicates with host via stdin/stdout
-	module := plugin.New(os.Stdin, os.Stdout)
+	module := plugin.NewStd()
 
 	// Define JSON serialization/deserialization functions
 	unmarshalReq := func(data []byte) (CalculateRequest, error) {
