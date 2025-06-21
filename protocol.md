@@ -98,7 +98,53 @@ sequenceDiagram
     L->>P: Stdin/Stdout Connection
     P->>L: Ready Signal
     Note over L,P: Communication Ready
+    Note over L: Register Built-in Handlers
+    Note over L,P: Bidirectional Communication Active
 ```
+
+#### Ready Signal
+```go
+Header{
+    Name:        "ready",
+    MessageType: MessageTypeNotify,
+    IsError:     false,
+    Payload:     []byte("ready"),
+}
+```
+
+### 2. Bidirectional Communication Patterns
+
+#### Traditional Request/Response (Loader → Plugin)
+```mermaid
+sequenceDiagram
+    participant L as Loader
+    participant P as Plugin
+    
+    L->>P: Request (MessageType=Request)
+    P->>L: Response (MessageType=Response)
+```
+
+#### Plugin-Initiated Messages (Plugin → Loader)
+```mermaid
+sequenceDiagram
+    participant L as Loader
+    participant P as Plugin
+    
+    P->>L: Notification (MessageType=Notify)
+    Note over L: Process via MessageHandler
+    
+    P->>L: Request (MessageType=Request) 
+    L->>P: Response (MessageType=Response)
+    Note over L: Process via RequestHandler
+```
+
+#### Built-in Protocol Messages
+The system automatically handles standard protocol messages:
+- **info**: Informational messages from plugins
+- **warning**: Warning messages from plugins  
+- **error**: Error notifications from plugins
+- **heartbeat**: Periodic status messages from plugins
+- **status**: Plugin status updates
 
 #### Ready Signal
 ```go
@@ -137,7 +183,123 @@ Frame N: [Type=End, ID=123, Length=0] + []
 
 ## Special Message Types
 
-### 1. Shutdown Related Messages
+### 1. Bidirectional Communication APIs
+
+#### Loader-Side Handler Registration
+```go
+// Message Handler Interface
+type MessageHandler interface {
+    Handle(ctx context.Context, header Header) error
+}
+
+// Request Handler Interface  
+type RequestHandler interface {
+    HandleRequest(ctx context.Context, header Header) (responsePayload []byte, isError bool, err error)
+}
+
+// Registration Methods
+loader.RegisterMessageHandler(name string, handler MessageHandler)
+loader.RegisterMessageHandlerFunc(name string, handler func(ctx context.Context, header Header) error)
+loader.RegisterRequestHandler(name string, handler RequestHandler)  
+loader.RegisterRequestHandlerFunc(name string, handler func(ctx context.Context, header Header) ([]byte, bool, error))
+```
+
+#### Plugin-Side Message Sending
+```go
+// Send notification message (no response expected)
+module.SendMessage(ctx context.Context, serviceName string, payload []byte) error
+
+// Send request message (expects response)
+module.SendRequest(serviceName string, payload []byte) ([]byte, error)
+
+// Send message with custom sequence ID
+module.SendMessageWithSequence(ctx context.Context, serviceName string, sequenceID uint32, payload []byte) error
+```
+
+### 2. Built-in Protocol Messages
+
+The loader automatically registers handlers for standard protocol messages:
+
+```go
+// Built-in message handlers (auto-registered)
+- "info":      Log informational messages from plugins
+- "warning":   Log warning messages from plugins  
+- "error":     Log error messages from plugins
+- "heartbeat": Handle periodic heartbeat messages
+- "status":    Handle plugin status updates
+```
+
+#### Example Plugin-to-Loader Messages
+```go
+// Heartbeat message
+Header{
+    Name:        "heartbeat",
+    MessageType: MessageTypeNotify,
+    IsError:     false,
+    Payload:     []byte(`{"count":1,"status":"active","timestamp":"15:04:05"}`),
+}
+
+// Status update message
+Header{
+    Name:        "status", 
+    MessageType: MessageTypeNotify,
+    IsError:     false,
+    Payload:     []byte(`{"component":"worker","status":"busy","progress":75}`),
+}
+
+// Information message
+Header{
+    Name:        "info",
+    MessageType: MessageTypeNotify, 
+    IsError:     false,
+    Payload:     []byte("Plugin initialization completed successfully"),
+}
+```
+
+### 3. Message Routing Logic
+
+The loader uses MessageType to determine how to process incoming messages:
+
+```go
+switch header.MessageType {
+case MessageTypeResponse:
+    // Route to pending request handler
+    // Match by sequence ID and deliver response
+    
+case MessageTypeRequest:
+    // Route to registered RequestHandler
+    // Generate response and send back
+    
+case MessageTypeNotify, MessageTypeAck, MessageTypeError:
+    // Route to registered MessageHandler
+    // Process message (no response expected)
+}
+```
+
+#### Message Processing Flow
+```mermaid
+sequenceDiagram
+    participant P as Plugin
+    participant L as Loader
+    participant H as Handler
+    
+    P->>L: Message with MessageType
+    L->>L: Check MessageType
+    
+    alt MessageType = Request
+        L->>H: Call RequestHandler
+        H->>L: Return response
+        L->>P: Send Response
+    else MessageType = Notify/Ack/Error
+        L->>H: Call MessageHandler
+        Note over H: Process message
+    else MessageType = Response
+        L->>L: Match to pending request
+        Note over L: Deliver to waiting caller
+    end
+```
+
+### 4. Shutdown Related Messages
 
 #### Graceful Shutdown
 ```go
@@ -285,4 +447,107 @@ func UnmarshalResponse(data []byte, factory func() ResponseType) (ResponseType, 
 2. Add processing logic in Multiplexer
 3. Implement handling in upper layers
 
-This protocol documentation comprehensively covers all communication aspects of the plugin.go system, providing detailed information for developers to understand and extend the system.
+### 3. Extending Bidirectional Communication
+
+#### Custom Message Handlers
+```go
+// Register custom message handler on loader side
+loader.RegisterMessageHandlerFunc("custom_event", func(ctx context.Context, header plugin.Header) error {
+    // Process custom event from plugin
+    var event CustomEvent
+    json.Unmarshal(header.Payload, &event)
+    
+    // Handle the event
+    return processCustomEvent(event)
+})
+```
+
+#### Custom Request Handlers
+```go
+// Register custom request handler on loader side
+loader.RegisterRequestHandlerFunc("data_query", func(ctx context.Context, header plugin.Header) ([]byte, bool, error) {
+    var query DataQuery
+    json.Unmarshal(header.Payload, &query)
+    
+    // Process query and return data
+    result := processDataQuery(query)
+    response, err := json.Marshal(result)
+    return response, false, err
+})
+```
+
+#### Plugin-Side Integration
+```go
+// In plugin, send custom events
+event := CustomEvent{Type: "user_action", Data: actionData}
+eventData, _ := json.Marshal(event)
+module.SendMessage(ctx, "custom_event", eventData)
+
+// In plugin, make custom requests
+query := DataQuery{Table: "users", Filter: "active=true"}
+queryData, _ := json.Marshal(query)
+response, err := module.SendRequest("data_query", queryData)
+```
+
+### 4. Advanced Adapter Patterns
+
+#### Type-Safe Bidirectional Adapters
+```go
+// JSON-based message sender adapter
+messageSender := plugin.NewJSONLoaderMessageSender[NotificationData](loader, "notification")
+messageSender.Send(ctx, notificationData)
+
+// JSON-based request sender adapter  
+requestSender := plugin.NewJSONLoaderRequestSender[QueryRequest, QueryResponse](loader, "query")
+response, err := requestSender.SendRequest(ctx, queryRequest)
+
+// JSON-based message handler adapter
+messageHandler := plugin.NewJSONLoaderMessageHandlerAdapter[EventData](
+    loader, "event",
+    func(ctx context.Context, event EventData) error {
+        return processEvent(event)
+    },
+)
+defer messageHandler.Unregister()
+```
+
+## Implementation Notes
+
+### MessageType Routing Implementation
+The loader's message processing logic routes messages based on MessageType:
+
+```go
+func (l *Loader) handleMessages() {
+    for {
+        select {
+        case msg := <-messageChannel:
+            var header Header
+            header.UnmarshalBinary(msg.Data)
+            
+            switch header.MessageType {
+            case MessageTypeResponse:
+                l.handleResponse(msg.ID, header)
+            case MessageTypeRequest:
+                l.handleRequest(header)
+            case MessageTypeNotify, MessageTypeAck, MessageTypeError:
+                l.handleMessage(header)
+            }
+        }
+    }
+}
+```
+
+### Built-in Handler Registration
+Built-in handlers are automatically registered during loader creation:
+
+```go
+func (l *Loader) registerBuiltinHandlers() {
+    l.RegisterMessageHandlerFunc("info", l.handleInfoMessage)
+    l.RegisterMessageHandlerFunc("warning", l.handleWarningMessage)
+    l.RegisterMessageHandlerFunc("error", l.handleErrorMessage)
+    l.RegisterMessageHandlerFunc("heartbeat", l.handleHeartbeatMessage)
+    l.RegisterMessageHandlerFunc("status", l.handleStatusMessage)
+}
+```
+
+This protocol documentation comprehensively covers all communication aspects of the plugin.go system, including the new bidirectional communication features, providing detailed information for developers to understand and extend the system.

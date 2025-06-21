@@ -12,9 +12,15 @@ The library provides a clear separation of concerns:
 - **Process Management**: Forks and manages external executables as plugins using the `process` package.
 - **Multiplexed Communication**: Implements a multiplexing protocol (`multiplexer` package) over stdin/stdout, allowing concurrent request/response cycles between the host and plugin.
 - **Request/Response Pattern**: Uses unique sequence IDs for requests to correlate them with their responses.
+- **Bidirectional Communication**: Full duplex communication where both host and plugins can initiate messages and requests:
+    - **Host → Plugin**: Traditional request/response and one-way messages
+    - **Plugin → Host**: Plugins can send notifications, status updates, and make requests to the host
+    - **Message Types**: Request, Response, Notify, Acknowledgment, and Error messages with proper routing
 - **Typed Data Handling**:
     - Client-side: `LoaderAdapter` with `NewJSONLoaderAdapter` and `NewProtobufLoaderAdapter` for making typed calls.
     - Plugin-side: `HandlerAdapter` for creating typed handlers, which can then be registered with the `Module`.
+    - Host-side handlers: `MessageHandler` and `RequestHandler` interfaces for processing plugin-initiated communications.
+- **Built-in Protocol Messages**: Automatic handling of standard protocol messages (info, warning, error, heartbeat, status).
 - **Serialization Support**: Built-in support for JSON and Protocol Buffers, with extensibility for custom serializers.
 - **Graceful Shutdown**: Mechanisms for context-based cancellation and proper cleanup of resources.
 - **Error Propagation**: Clear distinction and propagation of transport errors, plugin execution errors, and serialization/deserialization errors.
@@ -115,6 +121,77 @@ go get github.com/snowmerak/plugin.go
 ```
 
 ## Usage Guide
+
+### Bidirectional Communication
+
+The library supports full bidirectional communication where plugins can initiate messages and requests to the host:
+
+#### Host-Side Handler Registration
+
+```go
+// Register message handler for plugin notifications
+loader.RegisterMessageHandlerFunc("notification", func(ctx context.Context, header plugin.Header) error {
+    fmt.Printf("Received notification: %s\n", string(header.Payload))
+    return nil
+})
+
+// Register request handler for plugin requests
+loader.RegisterRequestHandlerFunc("status_request", func(ctx context.Context, header plugin.Header) ([]byte, bool, error) {
+    // Process plugin request and return response
+    response := map[string]string{
+        "status": "healthy",
+        "uptime": "5m30s",
+    }
+    data, err := json.Marshal(response)
+    return data, false, err // false = not an error
+})
+```
+
+#### Plugin-Side Message Sending
+
+```go
+// Send notification to host
+notification := map[string]string{
+    "type": "heartbeat",
+    "message": "Plugin is alive",
+    "timestamp": time.Now().Format(time.RFC3339),
+}
+data, _ := json.Marshal(notification)
+module.SendMessage(ctx, "notification", data)
+
+// Make request to host
+request := map[string]string{
+    "component": "database",
+}
+requestData, _ := json.Marshal(request)
+response, err := module.SendRequest("status_request", requestData)
+```
+
+#### Real-World Example: Heartbeat Plugin
+
+See `example/plugins/heartbeat/` for a complete example of a plugin that sends periodic heartbeat messages:
+
+```go
+// Plugin sends heartbeat every second
+ticker := time.NewTicker(1 * time.Second)
+for {
+    select {
+    case <-ctx.Done():
+        return
+    case <-ticker.C:
+        heartbeat := HeartbeatData{
+            Count:     count,
+            Status:    "active", 
+            Timestamp: time.Now().Format("15:04:05"),
+            Message:   fmt.Sprintf("Heartbeat #%d from plugin", count),
+        }
+        
+        data, _ := json.Marshal(heartbeat)
+        module.SendMessage(ctx, "heartbeat", data)
+        count++
+    }
+}
+```
 
 ### Complete Working Example
 

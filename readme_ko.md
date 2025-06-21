@@ -12,9 +12,15 @@
 - **프로세스 관리**: `process` 패키지를 사용하여 외부 실행 파일을 플러그인으로 포크하고 관리합니다.
 - **멀티플렉싱 통신**: stdin/stdout을 통해 멀티플렉싱 프로토콜(`multiplexer` 패키지)을 구현하여 호스트와 플러그인 간의 동시 요청/응답 주기를 허용합니다.
 - **요청/응답 패턴**: 요청에 고유한 시퀀스 ID를 사용하여 응답과 연관시킵니다.
+- **양방향 통신**: 호스트와 플러그인 모두 메시지와 요청을 시작할 수 있는 완전한 이중 통신:
+    - **호스트 → 플러그인**: 전통적인 요청/응답 및 단방향 메시지
+    - **플러그인 → 호스트**: 플러그인이 알림, 상태 업데이트를 보내고 호스트에 요청할 수 있음
+    - **메시지 타입**: 적절한 라우팅을 통한 요청, 응답, 알림, 확인, 오류 메시지
 - **타입이 지정된 데이터 처리**:
     - 클라이언트 측: 타입이 지정된 호출을 위한 `NewJSONLoaderAdapter` 및 `NewProtobufLoaderAdapter`가 있는 `LoaderAdapter`.
     - 플러그인 측: 타입이 지정된 핸들러를 생성하기 위한 `HandlerAdapter`. 그런 다음 `Module`에 등록할 수 있습니다.
+    - 호스트 측 핸들러: 플러그인이 시작한 통신을 처리하기 위한 `MessageHandler` 및 `RequestHandler` 인터페이스.
+- **내장 프로토콜 메시지**: 표준 프로토콜 메시지(info, warning, error, heartbeat, status)의 자동 처리.
 - **직렬화 지원**: JSON 및 프로토콜 버퍼에 대한 기본 지원과 사용자 정의 직렬 변환기를 위한 확장성을 제공합니다.
 - **정상 종료**: 컨텍스트 기반 취소 및 리소스의 적절한 정리를 위한 메커니즘.
 - **오류 전파**: 전송 오류, 플러그인 실행 오류 및 직렬화/역직렬화 오류의 명확한 구분 및 전파.
@@ -116,6 +122,77 @@ go get github.com/snowmerak/plugin.go
 ```
 
 ## 사용 가이드
+
+### 양방향 통신
+
+라이브러리는 플러그인이 호스트에 메시지와 요청을 시작할 수 있는 완전한 양방향 통신을 지원합니다:
+
+#### 호스트 측 핸들러 등록
+
+```go
+// 플러그인 알림을 위한 메시지 핸들러 등록
+loader.RegisterMessageHandlerFunc("notification", func(ctx context.Context, header plugin.Header) error {
+    fmt.Printf("알림 수신: %s\n", string(header.Payload))
+    return nil
+})
+
+// 플러그인 요청을 위한 요청 핸들러 등록
+loader.RegisterRequestHandlerFunc("status_request", func(ctx context.Context, header plugin.Header) ([]byte, bool, error) {
+    // 플러그인 요청을 처리하고 응답 반환
+    response := map[string]string{
+        "status": "healthy",
+        "uptime": "5m30s",
+    }
+    data, err := json.Marshal(response)
+    return data, false, err // false = 오류가 아님
+})
+```
+
+#### 플러그인 측 메시지 전송
+
+```go
+// 호스트에 알림 전송
+notification := map[string]string{
+    "type": "heartbeat",
+    "message": "플러그인이 살아있음",
+    "timestamp": time.Now().Format(time.RFC3339),
+}
+data, _ := json.Marshal(notification)
+module.SendMessage(ctx, "notification", data)
+
+// 호스트에 요청
+request := map[string]string{
+    "component": "database",
+}
+requestData, _ := json.Marshal(request)
+response, err := module.SendRequest("status_request", requestData)
+```
+
+#### 실제 예제: 하트비트 플러그인
+
+주기적으로 하트비트 메시지를 보내는 플러그인의 완전한 예제는 `example/plugins/heartbeat/`를 참조하세요:
+
+```go
+// 플러그인이 1초마다 하트비트를 전송
+ticker := time.NewTicker(1 * time.Second)
+for {
+    select {
+    case <-ctx.Done():
+        return
+    case <-ticker.C:
+        heartbeat := HeartbeatData{
+            Count:     count,
+            Status:    "active", 
+            Timestamp: time.Now().Format("15:04:05"),
+            Message:   fmt.Sprintf("플러그인으로부터 하트비트 #%d", count),
+        }
+        
+        data, _ := json.Marshal(heartbeat)
+        module.SendMessage(ctx, "heartbeat", data)
+        count++
+    }
+}
+```
 
 ### 완전한 작동 예제
 
