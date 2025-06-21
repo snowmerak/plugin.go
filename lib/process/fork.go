@@ -24,7 +24,8 @@ func Fork(path string) (*Process, error) {
 	stdoutReader, stdoutWriter := io.Pipe()
 	cmd.Stdin = stdinReader
 	cmd.Stdout = stdoutWriter
-	cmd.Stderr = stdoutWriter
+	// Don't redirect stderr to stdout - let it go to the parent's stderr
+	// cmd.Stderr = stdoutWriter
 
 	if err := cmd.Start(); err != nil {
 		// Clean up pipes if process failed to start

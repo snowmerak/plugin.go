@@ -13,6 +13,91 @@ import (
 	"github.com/snowmerak/plugin.go/lib/multiplexer"
 )
 
+// oldNodeWrapper wraps the original Node to provide our interface
+type oldNodeWrapper struct {
+	node *multiplexer.Node
+}
+
+// WriteMessage wraps the Node's WriteMessage
+func (n *oldNodeWrapper) WriteMessage(ctx context.Context, data []byte) error {
+	return n.node.WriteMessage(ctx, data)
+}
+
+// WriteMessageWithSequence wraps the Node's WriteMessageWithSequence
+func (n *oldNodeWrapper) WriteMessageWithSequence(ctx context.Context, seq uint32, data []byte) error {
+	return n.node.WriteMessageWithSequence(ctx, seq, data)
+}
+
+// ReadMessage wraps the Node's ReadMessage and converts to old format
+func (n *oldNodeWrapper) ReadMessage(ctx context.Context) (chan *OldMessage, error) {
+	newCh, err := n.node.ReadMessage(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	oldCh := make(chan *OldMessage, 100)
+	go func() {
+		defer close(oldCh)
+		for newMsg := range newCh {
+			oldMsg := &OldMessage{
+				ID:   newMsg.ID,
+				Data: newMsg.Data,
+				Type: newMsg.Type,
+			}
+			oldCh <- oldMsg
+		}
+	}()
+
+	return oldCh, nil
+}
+
+// nodeWrapper wraps the new multiplexer API to provide the old Node interface
+type nodeWrapper struct {
+	multiplexer multiplexer.Multiplexer
+	sequence    uint32
+	mu          sync.Mutex
+}
+
+// Message represents a message in the old format
+type OldMessage struct {
+	ID   uint32
+	Data []byte
+	Type uint8
+}
+
+// WriteMessage wraps the new API
+func (n *nodeWrapper) WriteMessage(ctx context.Context, data []byte) error {
+	return n.multiplexer.WriteMessage(ctx, data)
+}
+
+// WriteMessageWithSequence wraps the new API
+func (n *nodeWrapper) WriteMessageWithSequence(ctx context.Context, seq uint32, data []byte) error {
+	return n.multiplexer.WriteMessageWithSequence(ctx, seq, data)
+}
+
+// ReadMessage wraps the new API and converts to old format
+func (n *nodeWrapper) ReadMessage(ctx context.Context) (chan *OldMessage, error) {
+	newCh, err := n.multiplexer.ReadMessage(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	oldCh := make(chan *OldMessage, 100)
+	go func() {
+		defer close(oldCh)
+		for newMsg := range newCh {
+			oldMsg := &OldMessage{
+				ID:   newMsg.Sequence,
+				Data: newMsg.Data,
+				Type: 0x05, // MessageHeaderTypeComplete
+			}
+			oldCh <- oldMsg
+		}
+	}()
+
+	return oldCh, nil
+}
+
 type Header struct {
 	Name    string
 	IsError bool
@@ -108,8 +193,15 @@ type AppHandlerResult struct {
 // The second error return is for critical errors within the wrapper itself.
 type Handler func(requestPayload []byte) (AppHandlerResult, error)
 
+// NodeInterface defines the interface for multiplexer operations
+type NodeInterface interface {
+	WriteMessage(ctx context.Context, data []byte) error
+	WriteMessageWithSequence(ctx context.Context, seq uint32, data []byte) error
+	ReadMessage(ctx context.Context) (chan *OldMessage, error)
+}
+
 type Module struct {
-	multiplexer *multiplexer.Node
+	multiplexer NodeInterface
 	handler     map[string]Handler
 	handlerLock sync.RWMutex
 }
@@ -122,11 +214,11 @@ func New(reader io.Reader, writer io.Writer) *Module {
 	if writer == nil {
 		writer = os.Stdout
 	}
-
-	mux := multiplexer.NewNode(reader, writer) // Use passed reader and writer
+	// Use the general multiplexer API which uses HybridNode
+	mux := multiplexer.New(reader, writer)
 
 	return &Module{
-		multiplexer: mux,
+		multiplexer: &nodeWrapper{multiplexer: mux},
 		handler:     make(map[string]Handler),
 	}
 }
@@ -149,6 +241,22 @@ func RegisterHandler(m *Module, name string, handler func(requestPayload []byte)
 		// which are now minimal as GOB processing is removed.
 		return AppHandlerResult{Payload: responseBytes, IsError: isErr}, nil
 	}
+}
+
+// SendReady sends a ready message to indicate the plugin is ready to receive requests
+func (m *Module) SendReady(ctx context.Context) error {
+	readyHeader := Header{
+		Name:    "ready",
+		IsError: false,
+		Payload: []byte("ready"),
+	}
+
+	readyData, err := readyHeader.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("failed to marshal ready header: %w", err)
+	}
+
+	return m.multiplexer.WriteMessage(ctx, readyData)
 }
 
 func (m *Module) Listen(ctx context.Context) error {

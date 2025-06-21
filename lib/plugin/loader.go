@@ -3,8 +3,10 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/snowmerak/plugin.go/lib/multiplexer"
 	"github.com/snowmerak/plugin.go/lib/process"
@@ -16,7 +18,7 @@ type Loader struct {
 	Version string
 
 	process     *process.Process
-	multiplexer *multiplexer.Node
+	multiplexer multiplexer.Multiplexer
 
 	requestID atomic.Uint32 // Changed atomic.Uint64 to atomic.Uint32
 
@@ -55,17 +57,52 @@ func (l *Loader) Load(ctx context.Context) error {
 	}
 	l.process = p
 
-	mux := multiplexer.NewNode(p.Stdout(), p.Stdin())
+	mux := multiplexer.New(p.Stdout(), p.Stdin())
 	l.multiplexer = mux
 
 	// Use the provided context as parent, but create a child for internal control
 	l.loadCtx, l.cancelLoad = context.WithCancel(ctx)
 
+	// Start the message handling goroutine for request/response communication
 	recv, err := l.multiplexer.ReadMessage(l.loadCtx)
 	if err != nil {
 		p.Close()
 		l.cancelLoad()
 		return fmt.Errorf("failed to read message: %w", err)
+	}
+
+	// Wait for ready signal from plugin
+	select {
+	case readyMsg, ok := <-recv:
+		if !ok {
+			p.Close()
+			l.cancelLoad()
+			return fmt.Errorf("plugin closed before sending ready signal")
+		}
+
+		// Parse the ready message header
+		var readyHeader Header
+		if err := readyHeader.UnmarshalBinary(readyMsg.Data); err != nil {
+			p.Close()
+			l.cancelLoad()
+			return fmt.Errorf("failed to parse ready signal: %w", err)
+		}
+
+		// Verify it's a ready signal
+		if readyHeader.Name != "ready" {
+			p.Close()
+			l.cancelLoad()
+			return fmt.Errorf("expected ready signal, got service: %s", readyHeader.Name)
+		}
+
+	case <-l.loadCtx.Done():
+		p.Close()
+		l.cancelLoad()
+		return fmt.Errorf("context cancelled while waiting for ready signal")
+	case <-time.After(5 * time.Second):
+		p.Close()
+		l.cancelLoad()
+		return fmt.Errorf("timeout waiting for ready signal from plugin")
 	}
 
 	// Start process monitoring
@@ -100,7 +137,7 @@ func (l *Loader) Load(ctx context.Context) error {
 					return
 				}
 
-				requestID := mesg.ID // mesg.ID is now uint32
+				requestID := mesg.Sequence // mesg.Sequence is now uint32
 
 				l.requestMutex.RLock()
 				responseChan, exists := l.pendingRequests[requestID]
@@ -134,13 +171,25 @@ func (l *Loader) Close() error {
 		l.cancelLoad()
 	}
 
-	// 2. 메시지 처리 goroutine이 완료될 때까지 대기
-	l.wg.Wait()
-
-	// 3. 프로세스 종료 (파이프 닫기 포함)
+	// 2. 프로세스를 먼저 종료하여 파이프를 닫음 (고루틴이 블로킹에서 벗어나도록)
 	var closeErr error
 	if l.process != nil {
 		closeErr = l.process.Close()
+	}
+
+	// 3. 타임아웃과 함께 고루틴 완료 대기
+	done := make(chan struct{})
+	go func() {
+		l.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// 정상적으로 종료됨
+	case <-time.After(2 * time.Second):
+		// 타임아웃 - 강제 종료
+		fmt.Fprintf(os.Stderr, "Warning: Loader close timed out, some goroutines may not have finished\n")
 	}
 
 	return closeErr
@@ -152,6 +201,8 @@ func (l *Loader) Close() error {
 // this error is returned, with the error message being the string representation
 // of the plugin's error payload.
 func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([]byte, error) {
+	fmt.Fprintf(os.Stderr, "DEBUG Call: Starting call for service '%s'\n", name)
+
 	if l.closed.Load() {
 		return nil, fmt.Errorf("loader is closed")
 	}
@@ -173,6 +224,8 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 		return nil, fmt.Errorf("failed to encode header: %w", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG Call: Header marshaled, requesting lock\n")
+
 	l.requestMutex.Lock()
 	// Double-check closed status while holding lock
 	if l.closed.Load() {
@@ -185,6 +238,8 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 	l.pendingRequests[requestID] = responseChan
 	l.requestMutex.Unlock()
 
+	fmt.Fprintf(os.Stderr, "DEBUG Call: Request ID %d generated, sending message\n", requestID)
+
 	defer func() {
 		l.requestMutex.Lock()
 		delete(l.pendingRequests, requestID)
@@ -194,6 +249,8 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 	if err := l.multiplexer.WriteMessageWithSequence(ctx, requestID, headerData); err != nil {
 		return nil, fmt.Errorf("failed to write request message: %w", err)
 	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG Call: Message sent, waiting for response\n")
 
 	select {
 	case responseData, ok := <-responseChan:
