@@ -27,6 +27,9 @@ type Loader struct {
 	cancelLoad context.CancelFunc
 	closed     atomic.Bool
 	wg         sync.WaitGroup
+
+	// Add process monitoring
+	processExited atomic.Bool
 }
 
 func NewLoader(path, name, version string) *Loader {
@@ -64,6 +67,10 @@ func (l *Loader) Load(ctx context.Context) error {
 		l.cancelLoad()
 		return fmt.Errorf("failed to read message: %w", err)
 	}
+
+	// Start process monitoring
+	l.wg.Add(1)
+	go l.monitorProcess()
 
 	l.wg.Add(1)
 	go func() {
@@ -173,7 +180,7 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 		return nil, fmt.Errorf("loader closed before dispatching request")
 	}
 
-	requestID := l.requestID.Add(1)
+	requestID := l.generateRequestID()
 	responseChan := make(chan []byte, 1)
 	l.pendingRequests[requestID] = responseChan
 	l.requestMutex.Unlock()
@@ -213,4 +220,55 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 	case <-l.loadCtx.Done():
 		return nil, fmt.Errorf("loader is shutting down")
 	}
+}
+
+// monitorProcess monitors the plugin process and closes the loader if the process exits
+func (l *Loader) monitorProcess() {
+	defer l.wg.Done()
+
+	if l.process != nil {
+		// Wait for process to exit
+		l.process.Wait()
+
+		// Mark process as exited
+		l.processExited.Store(true)
+
+		// Close the loader to prevent further operations
+		if !l.closed.Load() {
+			l.closed.Store(true)
+			if l.cancelLoad != nil {
+				l.cancelLoad()
+			}
+		}
+	}
+}
+
+// generateRequestID generates a unique request ID, avoiding collisions with existing pending requests
+func (l *Loader) generateRequestID() uint32 {
+	const maxAttempts = 100 // Prevent infinite loop in extreme cases
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		id := l.requestID.Add(1)
+		if id == 0 {
+			// Skip 0 as it might be reserved
+			continue
+		}
+
+		l.requestMutex.RLock()
+		_, exists := l.pendingRequests[id]
+		l.requestMutex.RUnlock()
+
+		if !exists {
+			return id
+		}
+	}
+
+	// Fallback: if we can't find a unique ID after maxAttempts, use the current value
+	// This should be extremely rare unless there are millions of concurrent requests
+	return l.requestID.Load()
+}
+
+// IsProcessAlive returns true if the plugin process is still running
+func (l *Loader) IsProcessAlive() bool {
+	return !l.processExited.Load() && !l.closed.Load()
 }
