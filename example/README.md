@@ -10,6 +10,7 @@ This directory contains practical working examples demonstrating the `plugin.go`
   - `echo/` - Simple echo plugin
   - `calculator/` - JSON-based calculator plugin
   - `sleeper/` - Sleep operation plugin with timeout handling
+  - `heartbeat/` - Bidirectional communication plugin with continuous heartbeat
 
 ## 🚀 Quick Start
 
@@ -19,6 +20,7 @@ This directory contains practical working examples demonstrating the `plugin.go`
    go build -o plugins/echo/echo ./plugins/echo
    go build -o plugins/calculator/calculator ./plugins/calculator
    go build -o plugins/sleeper/sleeper ./plugins/sleeper
+   go build -o plugins/heartbeat/heartbeat ./plugins/heartbeat
    ```
 
 2. **Run simple example:**
@@ -28,6 +30,15 @@ This directory contains practical working examples demonstrating the `plugin.go`
 
 3. **Run comprehensive host application:**
    ```bash
+   go run ./host
+   ```
+
+4. **Test individual heartbeat plugin:**
+   ```bash
+   # Build the heartbeat plugin first
+   go build -o plugins/heartbeat/heartbeat ./plugins/heartbeat
+   
+   # Run host application to see heartbeat in action
    go run ./host
    ```
 
@@ -72,6 +83,19 @@ This directory contains practical working examples demonstrating the `plugin.go`
   - Input: `{"message": "work", "sleep_time": 2}`
   - Output: `{"message": "work completed", "slept_time": 2}`
 
+### Heartbeat Plugin (`plugins/heartbeat/`)
+- **Purpose**: Demonstrates bidirectional communication and continuous data streaming
+- **Features**:
+  - Sends heartbeat data every second automatically
+  - Shows plugin-initiated communication to host
+  - Supports both message sending and request handling
+  - Demonstrates real-time data streaming patterns
+- **Bidirectional API**:
+  - **Outgoing Messages**: `{"timestamp": "2024-06-22T10:30:45Z", "counter": 42, "status": "active", "message": "Heartbeat #42 from plugin"}`
+  - **Echo Request**: Input `{"message": "hello"}`, Output `{"echo_response": "Echo: hello", "timestamp": "..."}`
+  - **Info Request**: Input `{}`, Output `{"plugin_name": "heartbeat", "version": "1.0.0", ...}`
+  - **Stop Request**: Input `{}`, Output `{"message": "Stop request acknowledged", "status": "stopping"}`
+
 ### Host Application (`host/`)
 - **Purpose**: Real-world application scenario demonstration
 - **Features**:
@@ -84,6 +108,7 @@ This directory contains practical working examples demonstrating the `plugin.go`
   - `echo.go` - Echo plugin integration
   - `calculator.go` - Calculator plugin integration
   - `sleeper.go` - Sleeper plugin integration
+  - `heartbeat.go` - Heartbeat plugin integration with message handling
   - `force_shutdown.go` - Shutdown handling demonstration
 
 ## 🔧 Building and Running
@@ -98,6 +123,7 @@ This directory contains practical working examples demonstrating the `plugin.go`
 go build -o plugins/echo/echo ./plugins/echo
 go build -o plugins/calculator/calculator ./plugins/calculator
 go build -o plugins/sleeper/sleeper ./plugins/sleeper
+go build -o plugins/heartbeat/heartbeat ./plugins/heartbeat
 
 # Or build all at once
 make build-examples  # if Makefile exists
@@ -115,20 +141,25 @@ go run ./host
 ./plugins/echo/echo
 ./plugins/calculator/calculator
 ./plugins/sleeper/sleeper
+./plugins/heartbeat/heartbeat
 ```
 
 ## 🎯 Learning Path
 
 1. **Start with `simple.go`** - Understand basic plugin loading and invocation
 2. **Examine plugin implementations** - See how plugins are structured
-3. **Run host application** - Experience multi-plugin scenarios
-4. **Modify examples** - Experiment with your own plugin logic
+3. **Explore heartbeat plugin** - Learn bidirectional communication patterns
+4. **Run host application** - Experience multi-plugin scenarios
+5. **Modify examples** - Experiment with your own plugin logic
 
 ## 🔍 Key Concepts Demonstrated
 
 - **Plugin Lifecycle**: Loading, invoking, and cleanup
 - **JSON Communication**: Standardized request/response format
+- **Bidirectional Communication**: Plugin-initiated messages and host-initiated requests
+- **Real-time Data Streaming**: Continuous heartbeat and event-driven communication
 - **Context Management**: Timeout and cancellation handling
 - **Error Handling**: Graceful error propagation and recovery
 - **Concurrency**: Multiple plugins running independently
 - **Resource Management**: Proper cleanup and shutdown procedures
+- **Message Handling**: Asynchronous message processing patterns
