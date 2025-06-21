@@ -239,6 +239,11 @@ func New(reader io.Reader, writer io.Writer) *Module {
 	}
 }
 
+// NewStd creates a new Module instance using standard input and output.
+func NewStd() *Module {
+	return New(os.Stdin, os.Stdout)
+}
+
 // RegisterHandler registers a handler function for the given service name.
 // The handler function processes raw byte payloads and returns raw byte responses.
 func RegisterHandler(m *Module, name string, handler func(requestPayload []byte) (responsePayload []byte, isAppError bool)) {
