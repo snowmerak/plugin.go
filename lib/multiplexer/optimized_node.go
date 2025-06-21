@@ -367,8 +367,8 @@ func (n *OptimizedNode) ReadMessageOptimized(ctx context.Context) (chan *Message
 	return ch, nil
 }
 
-func (n *OptimizedNode) GetMetrics() NodeMetrics {
-	return n.metrics
+func (n *OptimizedNode) GetMetrics() *NodeMetrics {
+	return &n.metrics
 }
 
 func (n *OptimizedNode) Close() error {

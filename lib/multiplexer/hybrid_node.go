@@ -451,8 +451,8 @@ func (n *HybridNode) WriteMessage(ctx context.Context, data []byte) error {
 	return nil
 }
 
-func (n *HybridNode) GetMetrics() NodeMetrics {
-	return n.metrics
+func (n *HybridNode) GetMetrics() *NodeMetrics {
+	return &n.metrics
 }
 
 func (n *HybridNode) GetPendingMessageCount() int {
