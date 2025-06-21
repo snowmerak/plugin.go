@@ -65,12 +65,7 @@ func main() {
 	// Register handler with module
 	plugin.RegisterHandler(module, "Sleep", sleeperAdapter.ToPluginHandler())
 
-	// Send ready signal (loader waits for first message)
-	if err := module.SendReady(context.Background()); err != nil {
-		os.Exit(1)
-	}
-
-	// Process requests in infinite loop
+	// Process requests in infinite loop (ready signal is sent automatically)
 	if err := module.Listen(context.Background()); err != nil {
 		os.Exit(1)
 	}

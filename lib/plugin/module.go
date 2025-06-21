@@ -323,10 +323,16 @@ func (m *Module) getActiveJobCount() int64 {
 
 // Listen starts listening for incoming messages and processes them.
 // It handles graceful and force shutdown signals appropriately.
+// Automatically sends a ready signal when starting to listen.
 func (m *Module) Listen(ctx context.Context) error {
 	recv, err := m.multiplexer.ReadMessage(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to read message: %w", err)
+	}
+
+	// Automatically send ready signal after setting up the receiver but before starting to listen
+	if err := m.SendReady(ctx); err != nil {
+		return fmt.Errorf("failed to send ready signal: %w", err)
 	}
 
 	// Create a context that gets cancelled on force shutdown or parent context cancellation
