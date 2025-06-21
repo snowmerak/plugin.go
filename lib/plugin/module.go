@@ -349,42 +349,51 @@ func (m *Module) Listen(ctx context.Context) error {
 					fmt.Fprintf(os.Stderr, "Plugin: Received graceful shutdown signal\n")
 					m.Shutdown()
 
-					// Send shutdown acknowledgment FIRST
+					// Send immediate ACK to let host know we received the shutdown signal
 					ackHeader := Header{
 						Name:    "shutdown_ack",
 						IsError: false,
-						Payload: []byte("shutting down gracefully"),
+						Payload: []byte("graceful shutdown started, waiting for jobs to complete"),
 					}
 
 					if ackData, err := ackHeader.MarshalBinary(); err == nil {
 						m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
-						fmt.Fprintf(os.Stderr, "Plugin: Sent shutdown ACK to host\n")
+						fmt.Fprintf(os.Stderr, "Plugin: Sent immediate shutdown ACK to host\n")
 					}
 
-					// Give a moment for any pending jobs to be added to activeJobs
-					fmt.Fprintf(os.Stderr, "Plugin: Checking for active jobs...\n")
-					time.Sleep(100 * time.Millisecond)
-
-					initialJobCount := m.getActiveJobCount()
-					fmt.Fprintf(os.Stderr, "Plugin: Found %d active jobs, waiting for completion...\n", initialJobCount)
-
-					// Wait for active jobs to complete with timeout
-					done := make(chan struct{})
+					// Start graceful shutdown process in a goroutine
 					go func() {
-						m.activeJobs.Wait()
-						close(done)
+						// Give a moment for any pending jobs to be added to activeJobs
+						fmt.Fprintf(os.Stderr, "Plugin: Checking for active jobs...\n")
+						time.Sleep(100 * time.Millisecond)
+
+						initialJobCount := m.getActiveJobCount()
+						fmt.Fprintf(os.Stderr, "Plugin: Found %d active jobs, waiting for completion...\n", initialJobCount)
+
+						// Wait for active jobs to complete (no timeout for graceful shutdown)
+						done := make(chan struct{})
+						go func() {
+							m.activeJobs.Wait()
+							close(done)
+						}()
+
+						var shutdownReason string
+						select {
+						case <-done:
+							shutdownReason = "all jobs completed"
+							fmt.Fprintf(os.Stderr, "Plugin: All active jobs completed, shutting down gracefully\n")
+						case <-m.forceShutdownChan:
+							shutdownReason = "force shutdown received during graceful shutdown"
+							fmt.Fprintf(os.Stderr, "Plugin: Force shutdown received during graceful shutdown\n")
+						}
+
+						fmt.Fprintf(os.Stderr, "Plugin: Graceful shutdown completed: %s\n", shutdownReason)
+
+						// After graceful shutdown is complete, cancel the context to exit the main loop
+						cancel()
 					}()
 
-					select {
-					case <-done:
-						fmt.Fprintf(os.Stderr, "Plugin: All active jobs completed, shutting down gracefully\n")
-					case <-time.After(10 * time.Second): // 10초 타임아웃
-						fmt.Fprintf(os.Stderr, "Plugin: Graceful shutdown timeout (10s), forcing exit\n")
-					case <-m.forceShutdownChan:
-						fmt.Fprintf(os.Stderr, "Plugin: Force shutdown received during graceful shutdown\n")
-					}
-
-					return nil
+					continue // Continue listening for more messages (including force_shutdown)
 				} else if header.Name == "force_shutdown" {
 					fmt.Fprintf(os.Stderr, "Plugin: Received force shutdown signal\n")
 					m.ForceShutdown()
@@ -405,11 +414,20 @@ func (m *Module) Listen(ctx context.Context) error {
 				}
 			}
 
-			// ⚠️  수정된 로직: shutdown 중에도 이미 큐에 있는 요청들은 처리하되, 응답에 shutdown 경고 포함
+			// ⚠️ Graceful shutdown 중에는 새로운 요청을 거부
 			if m.IsShutdown() {
-				fmt.Fprintf(os.Stderr, "Plugin: Processing queued request '%s' during shutdown\n", header.Name)
-				// 새로운 요청은 차단하지만, 이미 큐에 있던 요청은 처리
-				// continue 대신 처리를 계속함
+				fmt.Fprintf(os.Stderr, "Plugin: Rejecting new request '%s' during graceful shutdown\n", header.Name)
+
+				// 즉시 에러 응답 보내기
+				errorHeader := Header{
+					Name:    header.Name,
+					IsError: true,
+					Payload: []byte("service unavailable: graceful shutdown in progress"),
+				}
+				if errorData, err := errorHeader.MarshalBinary(); err == nil {
+					m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, errorData)
+				}
+				continue // 새로운 요청은 처리하지 않음
 			}
 
 			// Process regular messages (only if not shutting down)
