@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/snowmerak/plugin.go/lib/process"
 )
 
+// Loader manages the lifecycle of a plugin process and provides communication capabilities.
 type Loader struct {
 	Path    string
 	Name    string
@@ -20,9 +20,9 @@ type Loader struct {
 	process     *process.Process
 	multiplexer multiplexer.Multiplexer
 
-	requestID atomic.Uint32 // Changed atomic.Uint64 to atomic.Uint32
+	requestID atomic.Uint32
 
-	pendingRequests map[uint32]chan []byte // Changed uint64 to uint32
+	pendingRequests map[uint32]chan []byte
 	requestMutex    sync.RWMutex
 
 	loadCtx    context.Context
@@ -30,19 +30,20 @@ type Loader struct {
 	closed     atomic.Bool
 	wg         sync.WaitGroup
 
-	// Add process monitoring
+	// Process monitoring
 	processExited atomic.Bool
 
-	// Add ready signal channel
+	// Ready signal channel
 	readySignal chan struct{}
 
-	// Add shutdown acknowledgment channel
+	// Shutdown acknowledgment channel
 	shutdownAck chan struct{}
 
-	// Add force shutdown acknowledgment channel
+	// Force shutdown acknowledgment channel
 	forceShutdownAck chan struct{}
 }
 
+// NewLoader creates a new Loader instance with the specified path, name, and version.
 func NewLoader(path, name, version string) *Loader {
 	return &Loader{
 		Path:             path,
@@ -58,6 +59,7 @@ func NewLoader(path, name, version string) *Loader {
 	}
 }
 
+// Load starts the plugin process and establishes communication.
 func (l *Loader) Load(ctx context.Context) error {
 	if l.closed.Load() {
 		return fmt.Errorf("loader is closed")
@@ -94,6 +96,7 @@ func (l *Loader) Load(ctx context.Context) error {
 }
 
 // Close shuts down the loader, terminates the plugin process, and cleans up resources.
+// It attempts graceful shutdown first, then waits for completion.
 func (l *Loader) Close() error {
 	if !l.closed.CompareAndSwap(false, true) {
 		return fmt.Errorf("loader already closed")
@@ -115,11 +118,8 @@ func (l *Loader) Close() error {
 			defer shutdownCancel()
 
 			if err := l.multiplexer.WriteMessage(shutdownCtx, shutdownData); err == nil {
-				fmt.Fprintf(os.Stderr, "Loader: Sent graceful shutdown signal to plugin\n")
-
 				// Wait for shutdown acknowledgment (no timeout)
 				<-l.shutdownAck
-				fmt.Fprintf(os.Stderr, "Loader: Received shutdown acknowledgment\n")
 			}
 		}
 	}
@@ -143,15 +143,16 @@ func (l *Loader) Close() error {
 
 	select {
 	case <-done:
-		fmt.Fprintf(os.Stderr, "Loader: All goroutines completed\n")
+		// All goroutines completed
 	case <-time.After(2 * time.Second):
-		fmt.Fprintf(os.Stderr, "Warning: Loader close timed out, some goroutines may not have finished\n")
+		// Close timed out, some goroutines may not have finished
 	}
 
 	return closeErr
 }
 
-// ForceClose forcibly shuts down the loader without waiting for graceful shutdown
+// ForceClose forcibly shuts down the loader without waiting for graceful shutdown.
+// This method should be used when immediate termination is required.
 func (l *Loader) ForceClose() error {
 	if !l.closed.CompareAndSwap(false, true) {
 		return fmt.Errorf("loader already closed")
@@ -173,14 +174,12 @@ func (l *Loader) ForceClose() error {
 			defer shutdownCancel()
 
 			if err := l.multiplexer.WriteMessage(shutdownCtx, shutdownData); err == nil {
-				fmt.Fprintf(os.Stderr, "Loader: Sent force shutdown signal to plugin\n")
-
 				// Wait for force shutdown acknowledgment with short timeout
 				select {
 				case <-l.forceShutdownAck:
-					fmt.Fprintf(os.Stderr, "Loader: Received force shutdown acknowledgment\n")
+					// Received force shutdown acknowledgment
 				case <-time.After(500 * time.Millisecond):
-					fmt.Fprintf(os.Stderr, "Loader: Force shutdown ack timeout, proceeding anyway\n")
+					// Force shutdown ack timeout, proceeding anyway
 				}
 			}
 		}
@@ -205,9 +204,9 @@ func (l *Loader) ForceClose() error {
 
 	select {
 	case <-done:
-		fmt.Fprintf(os.Stderr, "Loader: All goroutines completed (force)\n")
+		// All goroutines completed (force)
 	case <-time.After(500 * time.Millisecond):
-		fmt.Fprintf(os.Stderr, "Warning: Force close timed out quickly - some goroutines may still be running\n")
+		// Force close timed out quickly - some goroutines may still be running
 	}
 
 	return closeErr
@@ -358,12 +357,12 @@ func (l *Loader) handleMessages() {
 		l.requestMutex.Lock()
 		defer l.requestMutex.Unlock()
 		for id, ch := range l.pendingRequests {
-			// 채널이 이미 데이터를 받았는지 확인하고 안전하게 종료
+			// Check if channel already received data and close safely
 			select {
 			case <-ch:
-				// 이미 데이터가 있으면 그대로 둠
+				// Data already exists, leave it
 			default:
-				// 데이터가 없으면 채널을 닫아서 대기 중인 goroutine에 신호
+				// No data, close channel to signal waiting goroutines
 				close(ch)
 			}
 			delete(l.pendingRequests, id)
@@ -436,11 +435,11 @@ func (l *Loader) handleMessages() {
 			if exists {
 				select {
 				case responseChan <- mesg.Data:
-					// 성공적으로 전송됨
+					// Successfully sent
 				case <-l.loadCtx.Done():
 					return
 				default:
-					// 채널이 가득 찬 경우 - 호출자가 타임아웃될 것임
+					// Channel is full - caller will timeout
 				}
 			}
 		}

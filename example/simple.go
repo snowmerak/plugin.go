@@ -10,25 +10,25 @@ import (
 )
 
 func main() {
-	fmt.Println("=== 간단한 Plugin 테스트 ===")
+	fmt.Println("=== Simple Plugin Test ===")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Echo 플러그인 테스트
-	fmt.Println("Echo 플러그인 로드 중...")
+	// Test Echo plugin
+	fmt.Println("Loading Echo plugin...")
 	loader := plugin.NewLoader("./plugins/echo/echo", "echo", "v1.0.0")
 
 	if err := loader.Load(ctx); err != nil {
-		log.Fatalf("플러그인 로드 실패: %v", err)
+		log.Fatalf("Failed to load plugin: %v", err)
 	}
 	defer func() {
 		if err := loader.Close(); err != nil {
-			log.Printf("로더 닫기 오류: %v", err)
+			log.Printf("Error closing loader: %v", err)
 		}
 	}()
 
-	// JSON 어댑터 생성
+	// Create JSON adapter
 	type EchoRequest struct {
 		Message string `json:"message"`
 	}
@@ -38,15 +38,15 @@ func main() {
 
 	adapter := plugin.NewJSONLoaderAdapter[EchoRequest, EchoResponse](loader)
 
-	// 간단한 테스트
-	fmt.Println("Echo 서비스 호출 중...")
+	// Simple test
+	fmt.Println("Calling Echo service...")
 	req := EchoRequest{Message: "Hello, Plugin!"}
 	resp, err := adapter.Call(ctx, "Echo", req)
 	if err != nil {
-		log.Fatalf("호출 실패: %v", err)
+		log.Fatalf("Call failed: %v", err)
 	}
 
-	fmt.Printf("요청: %s\n", req.Message)
-	fmt.Printf("응답: %s\n", resp.Echo)
-	fmt.Println("테스트 완료!")
+	fmt.Printf("Request: %s\n", req.Message)
+	fmt.Printf("Response: %s\n", resp.Echo)
+	fmt.Println("Test completed!")
 }

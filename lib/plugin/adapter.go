@@ -1,3 +1,4 @@
+// Package plugin provides adapter functionality for type-safe plugin communication.
 package plugin
 
 import (
@@ -7,8 +8,11 @@ import (
 )
 
 // Serializer defines the functions for serializing requests and deserializing responses for the client LoaderAdapter.
+// It provides type-safe marshaling and unmarshaling of plugin communication data.
 type Serializer[Req, Resp any] struct {
-	MarshalRequest    func(Req) ([]byte, error)
+	// MarshalRequest converts a typed request into bytes for transmission to the plugin
+	MarshalRequest func(Req) ([]byte, error)
+	// UnmarshalResponse converts bytes received from the plugin back into a typed response
 	UnmarshalResponse func([]byte) (Resp, error)
 	// UnmarshalError can be used if plugin error payloads have a specific structure.
 	// For now, loader.Call stringifies error payloads, so this might not be strictly needed
@@ -17,12 +21,14 @@ type Serializer[Req, Resp any] struct {
 }
 
 // LoaderAdapter provides a generic way to call plugin functions with specific request and response types (client-side).
+// It wraps a Loader and handles type-safe serialization/deserialization of communication data.
 type LoaderAdapter[Req, Resp any] struct {
 	loader     *Loader
 	serializer Serializer[Req, Resp]
 }
 
 // NewLoaderAdapter creates a new generic loader adapter with a given loader and serializer (client-side).
+// The adapter provides type-safe communication with plugins by handling serialization automatically.
 func NewLoaderAdapter[Req, Resp any](loader *Loader, serializer Serializer[Req, Resp]) *LoaderAdapter[Req, Resp] {
 	return &LoaderAdapter[Req, Resp]{
 		loader:     loader,
@@ -31,6 +37,8 @@ func NewLoaderAdapter[Req, Resp any](loader *Loader, serializer Serializer[Req, 
 }
 
 // Call invokes a function on the plugin (client-side).
+// It marshals the request, sends it to the plugin, and unmarshals the response into the expected type.
+// Returns an error if marshaling, communication, or unmarshaling fails.
 func (a *LoaderAdapter[Req, Resp]) Call(ctx context.Context, name string, request Req) (Resp, error) {
 	var zeroResp Resp // Zero value of Resp to return on error
 
@@ -58,6 +66,7 @@ func (a *LoaderAdapter[Req, Resp]) Call(ctx context.Context, name string, reques
 }
 
 // HandlerAdapter provides a generic way to wrap module handlers with specific request and response types (module-side).
+// It handles deserialization of incoming requests and serialization of outgoing responses.
 type HandlerAdapter[Req, Resp any] struct {
 	unmarshalReq func([]byte) (Req, error)
 	marshalResp  func(Resp) ([]byte, error)
@@ -66,6 +75,9 @@ type HandlerAdapter[Req, Resp any] struct {
 }
 
 // NewHandlerAdapter creates a new generic module adapter (module-side).
+// It wraps a typed handler function to work with the plugin module's raw byte interface.
+// The typedHandlerFunc should return (response, isAppError) where isAppError indicates
+// whether the response represents an application error.
 func NewHandlerAdapter[Req, Resp any](
 	serviceName string,
 	unmarshalReqFunc func([]byte) (Req, error),
@@ -83,8 +95,10 @@ func NewHandlerAdapter[Req, Resp any](
 // ToPluginHandler converts the typed handler into the raw plugin.Handler signature.
 // It handles deserialization of the request and serialization of the response using the provided functions.
 // The returned plugin.Handler expects raw bytes and returns raw bytes with an error flag.
-// The critical error (second error return from plugin.Handler) is for issues within this adapter itself,
-// though most errors (like unmarshal/marshal) are treated as application-level errors.
+//
+// The returned function unmarshals incoming request bytes into the typed Req, calls the typed handler,
+// and marshals the response back to bytes. Any marshaling/unmarshaling errors are returned as
+// application errors to be sent back to the client.
 func (ha *HandlerAdapter[Req, Resp]) ToPluginHandler() func(requestPayload []byte) (responsePayload []byte, isAppError bool) {
 	return func(requestPayload []byte) ([]byte, bool) {
 		req, err := ha.unmarshalReq(requestPayload)

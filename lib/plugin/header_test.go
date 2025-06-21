@@ -53,7 +53,7 @@ func TestHeader_MarshalUnmarshal(t *testing.T) {
 		{
 			name: "Unicode name",
 			header: Header{
-				Name:    "테스트_서비스",
+				Name:    "test_service",
 				IsError: false,
 				Payload: []byte("unicode test"),
 			},

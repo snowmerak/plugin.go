@@ -14,22 +14,23 @@ import (
 	"github.com/snowmerak/plugin.go/lib/multiplexer"
 )
 
-// oldNodeWrapper wraps the original Node to provide our interface
+// oldNodeWrapper wraps the original Node to provide our interface.
+// This is used for compatibility with the old API.
 type oldNodeWrapper struct {
 	node *multiplexer.Node
 }
 
-// WriteMessage wraps the Node's WriteMessage
+// WriteMessage wraps the Node's WriteMessage method.
 func (n *oldNodeWrapper) WriteMessage(ctx context.Context, data []byte) error {
 	return n.node.WriteMessage(ctx, data)
 }
 
-// WriteMessageWithSequence wraps the Node's WriteMessageWithSequence
+// WriteMessageWithSequence wraps the Node's WriteMessageWithSequence method.
 func (n *oldNodeWrapper) WriteMessageWithSequence(ctx context.Context, seq uint32, data []byte) error {
 	return n.node.WriteMessageWithSequence(ctx, seq, data)
 }
 
-// ReadMessage wraps the Node's ReadMessage and converts to old format
+// ReadMessage wraps the Node's ReadMessage and converts to old format.
 func (n *oldNodeWrapper) ReadMessage(ctx context.Context) (chan *OldMessage, error) {
 	newCh, err := n.node.ReadMessage(ctx)
 	if err != nil {
@@ -52,31 +53,31 @@ func (n *oldNodeWrapper) ReadMessage(ctx context.Context) (chan *OldMessage, err
 	return oldCh, nil
 }
 
-// nodeWrapper wraps the new multiplexer API to provide the old Node interface
+// nodeWrapper wraps the new multiplexer API to provide the old Node interface.
 type nodeWrapper struct {
 	multiplexer multiplexer.Multiplexer
 	sequence    uint32
 	mu          sync.Mutex
 }
 
-// Message represents a message in the old format
+// OldMessage represents a message in the old format for backward compatibility.
 type OldMessage struct {
 	ID   uint32
 	Data []byte
 	Type uint8
 }
 
-// WriteMessage wraps the new API
+// WriteMessage wraps the new API for writing messages.
 func (n *nodeWrapper) WriteMessage(ctx context.Context, data []byte) error {
 	return n.multiplexer.WriteMessage(ctx, data)
 }
 
-// WriteMessageWithSequence wraps the new API
+// WriteMessageWithSequence wraps the new API for writing messages with sequence.
 func (n *nodeWrapper) WriteMessageWithSequence(ctx context.Context, seq uint32, data []byte) error {
 	return n.multiplexer.WriteMessageWithSequence(ctx, seq, data)
 }
 
-// ReadMessage wraps the new API and converts to old format
+// ReadMessage wraps the new API and converts to old format.
 func (n *nodeWrapper) ReadMessage(ctx context.Context) (chan *OldMessage, error) {
 	newCh, err := n.multiplexer.ReadMessage(ctx)
 	if err != nil {
@@ -99,12 +100,14 @@ func (n *nodeWrapper) ReadMessage(ctx context.Context) (chan *OldMessage, error)
 	return oldCh, nil
 }
 
+// Header represents the message header containing service name, error status, and payload.
 type Header struct {
 	Name    string
 	IsError bool
 	Payload []byte
 }
 
+// MarshalBinary encodes the header into binary format.
 func (h *Header) MarshalBinary() ([]byte, error) {
 	var buffer bytes.Buffer
 
@@ -144,6 +147,7 @@ func (h *Header) MarshalBinary() ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
+// UnmarshalBinary decodes the header from binary format.
 func (h *Header) UnmarshalBinary(data []byte) error {
 	buffer := bytes.NewReader(data)
 
@@ -194,13 +198,14 @@ type AppHandlerResult struct {
 // The second error return is for critical errors within the wrapper itself.
 type Handler func(requestPayload []byte) (AppHandlerResult, error)
 
-// NodeInterface defines the interface for multiplexer operations
+// NodeInterface defines the interface for multiplexer operations.
 type NodeInterface interface {
 	WriteMessage(ctx context.Context, data []byte) error
 	WriteMessageWithSequence(ctx context.Context, seq uint32, data []byte) error
 	ReadMessage(ctx context.Context) (chan *OldMessage, error)
 }
 
+// Module represents a plugin module that handles incoming requests and dispatches them to registered handlers.
 type Module struct {
 	multiplexer       NodeInterface
 	handler           map[string]Handler
@@ -213,6 +218,8 @@ type Module struct {
 	activeJobCount    int64 // atomic counter for active jobs
 }
 
+// New creates a new Module instance with the specified reader and writer.
+// If reader or writer are nil, they default to os.Stdin and os.Stdout respectively.
 func New(reader io.Reader, writer io.Writer) *Module {
 	if reader == nil {
 		reader = os.Stdin
@@ -232,6 +239,8 @@ func New(reader io.Reader, writer io.Writer) *Module {
 	}
 }
 
+// RegisterHandler registers a handler function for the given service name.
+// The handler function processes raw byte payloads and returns raw byte responses.
 func RegisterHandler(m *Module, name string, handler func(requestPayload []byte) (responsePayload []byte, isAppError bool)) {
 	m.handlerLock.Lock()
 	defer m.handlerLock.Unlock()
@@ -252,7 +261,7 @@ func RegisterHandler(m *Module, name string, handler func(requestPayload []byte)
 	}
 }
 
-// SendReady sends a ready message to indicate the plugin is ready to receive requests
+// SendReady sends a ready message to indicate the plugin is ready to receive requests.
 func (m *Module) SendReady(ctx context.Context) error {
 	readyHeader := Header{
 		Name:    "ready",
@@ -268,21 +277,21 @@ func (m *Module) SendReady(ctx context.Context) error {
 	return m.multiplexer.WriteMessage(ctx, readyData)
 }
 
-// Shutdown initiates graceful shutdown of the module
+// Shutdown initiates graceful shutdown of the module.
 func (m *Module) Shutdown() {
 	m.shutdownOnce.Do(func() {
 		close(m.shutdownChan)
 	})
 }
 
-// ForceShutdown initiates immediate shutdown of the module
+// ForceShutdown initiates immediate shutdown of the module.
 func (m *Module) ForceShutdown() {
 	m.forceShutdownOnce.Do(func() {
 		close(m.forceShutdownChan)
 	})
 }
 
-// IsShutdown returns true if the module is shutting down (gracefully)
+// IsShutdown returns true if the module is shutting down (gracefully).
 func (m *Module) IsShutdown() bool {
 	select {
 	case <-m.shutdownChan:
@@ -292,7 +301,7 @@ func (m *Module) IsShutdown() bool {
 	}
 }
 
-// IsForceShutdown returns true if the module is force shutting down
+// IsForceShutdown returns true if the module is force shutting down.
 func (m *Module) IsForceShutdown() bool {
 	select {
 	case <-m.forceShutdownChan:
@@ -302,11 +311,13 @@ func (m *Module) IsForceShutdown() bool {
 	}
 }
 
-// getActiveJobCount returns the current number of active jobs
+// getActiveJobCount returns the current number of active jobs.
 func (m *Module) getActiveJobCount() int64 {
 	return atomic.LoadInt64(&m.activeJobCount)
 }
 
+// Listen starts listening for incoming messages and processes them.
+// It handles graceful and force shutdown signals appropriately.
 func (m *Module) Listen(ctx context.Context) error {
 	recv, err := m.multiplexer.ReadMessage(ctx)
 	if err != nil {
@@ -321,7 +332,6 @@ func (m *Module) Listen(ctx context.Context) error {
 	go func() {
 		select {
 		case <-m.forceShutdownChan:
-			fmt.Fprintf(os.Stderr, "Plugin: Force shutdown signal detected, cancelling context\n")
 			cancel()
 		case <-ctx.Done():
 			cancel()
@@ -338,7 +348,6 @@ func (m *Module) Listen(ctx context.Context) error {
 
 			// Check for force shutdown first - immediate exit
 			if m.IsForceShutdown() {
-				fmt.Fprintf(os.Stderr, "Plugin: Force shutdown detected, exiting immediately\n")
 				return ctx.Err()
 			}
 
@@ -346,7 +355,6 @@ func (m *Module) Listen(ctx context.Context) error {
 			var header Header
 			if err := header.UnmarshalBinary(mesg.Data); err == nil {
 				if header.Name == "shutdown" {
-					fmt.Fprintf(os.Stderr, "Plugin: Received graceful shutdown signal\n")
 					m.Shutdown()
 
 					// Send immediate ACK to let host know we received the shutdown signal
@@ -358,17 +366,12 @@ func (m *Module) Listen(ctx context.Context) error {
 
 					if ackData, err := ackHeader.MarshalBinary(); err == nil {
 						m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
-						fmt.Fprintf(os.Stderr, "Plugin: Sent immediate shutdown ACK to host\n")
 					}
 
 					// Start graceful shutdown process in a goroutine
 					go func() {
 						// Give a moment for any pending jobs to be added to activeJobs
-						fmt.Fprintf(os.Stderr, "Plugin: Checking for active jobs...\n")
 						time.Sleep(100 * time.Millisecond)
-
-						initialJobCount := m.getActiveJobCount()
-						fmt.Fprintf(os.Stderr, "Plugin: Found %d active jobs, waiting for completion...\n", initialJobCount)
 
 						// Wait for active jobs to complete (no timeout for graceful shutdown)
 						done := make(chan struct{})
@@ -377,17 +380,12 @@ func (m *Module) Listen(ctx context.Context) error {
 							close(done)
 						}()
 
-						var shutdownReason string
 						select {
 						case <-done:
-							shutdownReason = "all jobs completed"
-							fmt.Fprintf(os.Stderr, "Plugin: All active jobs completed, shutting down gracefully\n")
+							// All jobs completed
 						case <-m.forceShutdownChan:
-							shutdownReason = "force shutdown received during graceful shutdown"
-							fmt.Fprintf(os.Stderr, "Plugin: Force shutdown received during graceful shutdown\n")
+							// Force shutdown received during graceful shutdown
 						}
-
-						fmt.Fprintf(os.Stderr, "Plugin: Graceful shutdown completed: %s\n", shutdownReason)
 
 						// After graceful shutdown is complete, cancel the context to exit the main loop
 						cancel()
@@ -395,7 +393,6 @@ func (m *Module) Listen(ctx context.Context) error {
 
 					continue // Continue listening for more messages (including force_shutdown)
 				} else if header.Name == "force_shutdown" {
-					fmt.Fprintf(os.Stderr, "Plugin: Received force shutdown signal\n")
 					m.ForceShutdown()
 
 					// Send immediate acknowledgment
@@ -409,16 +406,13 @@ func (m *Module) Listen(ctx context.Context) error {
 						m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
 					}
 
-					fmt.Fprintf(os.Stderr, "Plugin: Force shutdown - terminating immediately\n")
 					return nil
 				}
 			}
 
-			// ⚠️ Graceful shutdown 중에는 새로운 요청을 거부
+			// Reject new requests during graceful shutdown
 			if m.IsShutdown() {
-				fmt.Fprintf(os.Stderr, "Plugin: Rejecting new request '%s' during graceful shutdown\n", header.Name)
-
-				// 즉시 에러 응답 보내기
+				// Send immediate error response
 				errorHeader := Header{
 					Name:    header.Name,
 					IsError: true,
@@ -427,7 +421,7 @@ func (m *Module) Listen(ctx context.Context) error {
 				if errorData, err := errorHeader.MarshalBinary(); err == nil {
 					m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, errorData)
 				}
-				continue // 새로운 요청은 처리하지 않음
+				continue // Do not process new requests
 			}
 
 			// Process regular messages (only if not shutting down)
@@ -443,7 +437,6 @@ func (m *Module) Listen(ctx context.Context) error {
 
 		case <-listenCtx.Done():
 			// Context cancelled (shutdown or parent context)
-			fmt.Fprintf(os.Stderr, "Plugin: Context cancelled, waiting for active jobs to complete\n")
 
 			// Wait for active jobs to complete with timeout
 			done := make(chan struct{})
@@ -454,9 +447,9 @@ func (m *Module) Listen(ctx context.Context) error {
 
 			select {
 			case <-done:
-				fmt.Fprintf(os.Stderr, "Plugin: All active jobs completed\n")
+				// All active jobs completed
 			case <-time.After(5 * time.Second):
-				fmt.Fprintf(os.Stderr, "Plugin: Shutdown timeout reached\n")
+				// Shutdown timeout reached
 			}
 
 			return listenCtx.Err()
@@ -464,10 +457,11 @@ func (m *Module) Listen(ctx context.Context) error {
 	}
 }
 
-// processMessage handles a single message asynchronously
+// processMessage handles a single message asynchronously.
+// Already started tasks are allowed to complete even during graceful shutdown.
 func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
-	// 🔥 중요: shutdown 체크를 제거하여 이미 시작된 작업들이 완료될 수 있도록 함
-	// 새로운 요청만 Listen()에서 차단됨
+	// Important: Remove shutdown check so already started tasks can complete
+	// Only new requests are blocked in Listen()
 
 	var requestHeader Header
 	if err := requestHeader.UnmarshalBinary(mesg.Data); err != nil {
@@ -475,7 +469,7 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 		return
 	}
 
-	// Force shutdown인 경우에만 즉시 종료
+	// Exit immediately only for force shutdown
 	if m.IsForceShutdown() {
 		responseHeader := Header{
 			Name:    requestHeader.Name,
@@ -501,9 +495,7 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 		responseHeader.IsError = true
 		responseHeader.Payload = errPayload
 	} else {
-		// Execute handler - graceful shutdown 중에도 이미 시작된 작업은 완료됨
-		fmt.Fprintf(os.Stderr, "Plugin: Processing request '%s' (job %d)\n", requestHeader.Name, m.getActiveJobCount())
-
+		// Execute handler - already started tasks complete even during graceful shutdown
 		appResult, criticalErr := targetHandler(requestHeader.Payload)
 
 		if criticalErr != nil {
@@ -515,8 +507,6 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 			responseHeader.IsError = appResult.IsError
 			responseHeader.Payload = appResult.Payload
 		}
-
-		fmt.Fprintf(os.Stderr, "Plugin: Completed request '%s'\n", requestHeader.Name)
 	}
 
 	responseData, err := responseHeader.MarshalBinary()
@@ -528,6 +518,5 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 	// Send response back with the original message ID for proper correlation
 	if err := m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData); err != nil {
 		// Log error to stderr if possible, but don't fail the entire listener
-		fmt.Fprintf(os.Stderr, "Plugin: failed to write response for %s: %v\n", responseHeader.Name, err)
 	}
 }

@@ -1,3 +1,4 @@
+// Package plugin provides Protocol Buffers serialization adapters for type-safe plugin communication.
 package plugin
 
 import (
@@ -7,7 +8,12 @@ import (
 // NewProtobufLoaderAdapter creates a LoaderAdapter specialized for Protocol Buffers serialization.
 // Req and Resp types must implement proto.Message (e.g., *pb.MyRequest, *pb.MyResponse).
 // newRespInstance is a factory function that returns a new, non-nil instance of the Resp type.
-// Example: newRespInstance := func() *pb.MyResponse { return new(pb.MyResponse) }
+// This is required because protobuf unmarshaling needs a concrete instance to unmarshal into.
+//
+// Example usage:
+//
+//	newRespInstance := func() *pb.MyResponse { return new(pb.MyResponse) }
+//	adapter := NewProtobufLoaderAdapter(loader, newRespInstance)
 func NewProtobufLoaderAdapter[Req proto.Message, Resp proto.Message](
 	loader *Loader,
 	newRespInstance func() Resp, // Factory function for the response type

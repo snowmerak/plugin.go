@@ -1,3 +1,4 @@
+// Package plugin provides JSON serialization adapters for type-safe plugin communication.
 package plugin
 
 import (
@@ -6,6 +7,8 @@ import (
 
 // NewJSONLoaderAdapter creates a LoaderAdapter specialized for JSON serialization.
 // Req and Resp are the actual Go types that can be marshaled to/from JSON.
+// This adapter automatically handles JSON marshaling of requests and unmarshaling of responses,
+// providing a convenient way to work with JSON-based plugin APIs.
 func NewJSONLoaderAdapter[Req, Resp any](loader *Loader) *LoaderAdapter[Req, Resp] {
 	serializer := Serializer[Req, Resp]{
 		MarshalRequest: func(req Req) ([]byte, error) {
