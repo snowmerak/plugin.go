@@ -418,6 +418,20 @@ func (m *Module) Listen(ctx context.Context) error {
 					}
 
 					return nil
+				} else if header.Name == "request_ready" {
+					// Host is requesting a ready signal, send it
+					if err := m.SendReady(listenCtx); err == nil {
+						// Send acknowledgment that we processed the request_ready
+						ackHeader := Header{
+							Name:    "request_ready_ack",
+							IsError: false,
+							Payload: []byte("ready signal sent in response to request"),
+						}
+						if ackData, err := ackHeader.MarshalBinary(); err == nil {
+							m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
+						}
+					}
+					continue
 				}
 			}
 

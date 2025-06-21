@@ -346,8 +346,47 @@ func (l *Loader) waitForReadySignal() error {
 	case <-l.loadCtx.Done():
 		return fmt.Errorf("context cancelled while waiting for ready signal")
 	case <-time.After(5 * time.Second):
-		return fmt.Errorf("timeout waiting for ready signal from plugin")
+		// If no ready signal received within timeout, try requesting it
+		if err := l.RequestReady(); err != nil {
+			return fmt.Errorf("timeout waiting for ready signal and failed to request ready: %w", err)
+		}
+		// Wait a bit more after requesting ready
+		select {
+		case <-l.readySignal:
+			return nil
+		case <-l.loadCtx.Done():
+			return fmt.Errorf("context cancelled while waiting for ready signal after request")
+		case <-time.After(3 * time.Second):
+			return fmt.Errorf("timeout waiting for ready signal from plugin even after requesting")
+		}
 	}
+}
+
+// RequestReady sends a request to the plugin asking it to send a ready signal
+func (l *Loader) RequestReady() error {
+	if l.closed.Load() {
+		return fmt.Errorf("loader is closed")
+	}
+
+	if l.multiplexer == nil {
+		return fmt.Errorf("multiplexer not available")
+	}
+
+	requestReadyHeader := Header{
+		Name:    "request_ready",
+		IsError: false,
+		Payload: []byte("please send ready signal"),
+	}
+
+	requestData, err := requestReadyHeader.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("failed to marshal request ready header: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	return l.multiplexer.WriteMessage(ctx, requestData)
 }
 
 // handleMessages handles incoming messages from the plugin for request/response communication

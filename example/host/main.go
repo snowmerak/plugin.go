@@ -37,5 +37,11 @@ func main() {
 		log.Printf("Force shutdown test failed: %v", err)
 	}
 
+	// Ready Request test
+	fmt.Println("\n--- Ready Request Test ---")
+	if err := testReadyRequest(ctx); err != nil {
+		log.Printf("Ready request test failed: %v", err)
+	}
+
 	fmt.Println("\n=== All Tests Completed ===")
 }
