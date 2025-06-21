@@ -126,8 +126,6 @@ func (l *Loader) Close() error {
 // this error is returned, with the error message being the string representation
 // of the plugin's error payload.
 func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([]byte, error) {
-	fmt.Fprintf(os.Stderr, "DEBUG: Call started for service %s with payload length: %d\n", name, len(requestPayload))
-
 	if l.closed.Load() {
 		return nil, fmt.Errorf("loader is closed")
 	}
@@ -136,20 +134,16 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 		return nil, fmt.Errorf("loader not loaded or load failed")
 	}
 
-	// requestPayload is already []byte, no gobEncode needed.
-
 	requestHeader := Header{
 		Name:    name,
 		IsError: false,
-		Payload: requestPayload, // Use requestPayload directly
+		Payload: requestPayload,
 	}
 
 	headerData, err := requestHeader.MarshalBinary()
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode header: %w", err)
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Header marshaled successfully, length: %d\n", len(headerData))
 
 	// Generate request ID first (before acquiring lock)
 	requestID := l.generateRequestID()
@@ -165,20 +159,15 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 	l.pendingRequests[requestID] = responseChan
 	l.requestMutex.Unlock()
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Request ID generated: %d\n", requestID)
-
 	defer func() {
 		l.requestMutex.Lock()
 		delete(l.pendingRequests, requestID)
 		l.requestMutex.Unlock()
 	}()
 
-	fmt.Fprintf(os.Stderr, "DEBUG: About to write message with sequence %d\n", requestID)
 	if err := l.multiplexer.WriteMessageWithSequence(ctx, requestID, headerData); err != nil {
 		return nil, fmt.Errorf("failed to write request message: %w", err)
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Message written successfully, waiting for response...\n")
 
 	select {
 	case responseData, ok := <-responseChan:
@@ -186,28 +175,20 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 			return nil, fmt.Errorf("response channel closed, loader shutting down")
 		}
 
-		fmt.Fprintf(os.Stderr, "DEBUG: Received response data, length: %d\n", len(responseData))
-
 		var responseHeader Header
 		if err := responseHeader.UnmarshalBinary(responseData); err != nil {
 			return nil, fmt.Errorf("failed to decode response header: %w", err)
 		}
 
 		if responseHeader.IsError {
-			// The payload is the error data from the plugin, treat as string.
-			// No gobDecode needed for errMsg.
 			errMsg := string(responseHeader.Payload)
 			return nil, fmt.Errorf("plugin error for service %s: %s", name, errMsg)
 		}
 
-		// The payload is the success data. No gobDecode needed.
-		fmt.Fprintf(os.Stderr, "DEBUG: Call completed successfully for %s\n", name)
 		return responseHeader.Payload, nil
 	case <-ctx.Done():
-		fmt.Fprintf(os.Stderr, "DEBUG: Call context cancelled for %s\n", name)
 		return nil, ctx.Err()
 	case <-l.loadCtx.Done():
-		fmt.Fprintf(os.Stderr, "DEBUG: Loader shutting down during call for %s\n", name)
 		return nil, fmt.Errorf("loader is shutting down")
 	}
 }
@@ -237,13 +218,10 @@ func (l *Loader) monitorProcess() {
 func (l *Loader) generateRequestID() uint32 {
 	const maxAttempts = 100 // Prevent infinite loop in extreme cases
 
-	fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID starting\n")
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		id := l.requestID.Add(1)
-		fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID attempt %d, generated ID: %d\n", attempt, id)
 		if id == 0 {
 			// Skip 0 as it might be reserved
-			fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID skipping ID 0\n")
 			continue
 		}
 
@@ -252,17 +230,13 @@ func (l *Loader) generateRequestID() uint32 {
 		l.requestMutex.RUnlock()
 
 		if !exists {
-			fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID found unique ID: %d\n", id)
 			return id
 		}
-		fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID ID %d already exists, retrying\n", id)
 	}
 
 	// Fallback: if we can't find a unique ID after maxAttempts, use the current value
 	// This should be extremely rare unless there are millions of concurrent requests
-	fallbackID := l.requestID.Load()
-	fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID using fallback ID: %d\n", fallbackID)
-	return fallbackID
+	return l.requestID.Load()
 }
 
 // IsProcessAlive returns true if the plugin process is still running
@@ -306,37 +280,28 @@ func (l *Loader) handleMessages() {
 	// Create a new message reader for handling request/response communication
 	recv, err := l.multiplexer.ReadMessage(l.loadCtx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "DEBUG: Failed to create ReadMessage channel in handleMessages: %v\n", err)
 		return
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: handleMessages started, listening for responses...\n")
 
 	readyReceived := false
 
 	for {
 		select {
 		case <-l.loadCtx.Done():
-			fmt.Fprintf(os.Stderr, "DEBUG: handleMessages context cancelled\n")
 			return
 		case mesg, ok := <-recv:
 			if !ok {
-				fmt.Fprintf(os.Stderr, "DEBUG: handleMessages recv channel closed\n")
 				return
 			}
-
-			fmt.Fprintf(os.Stderr, "DEBUG: handleMessages received message with sequence %d, data length: %d\n", mesg.Sequence, len(mesg.Data))
 
 			// Handle ready signal first
 			if !readyReceived {
 				var readyHeader Header
 				if err := readyHeader.UnmarshalBinary(mesg.Data); err != nil {
-					fmt.Fprintf(os.Stderr, "DEBUG: Failed to parse first message as ready signal: %v\n", err)
 					continue
 				}
 
 				if readyHeader.Name == "ready" {
-					fmt.Fprintf(os.Stderr, "DEBUG: Ready signal received successfully\n")
 					readyReceived = true
 					// Signal that ready is received
 					select {
@@ -345,30 +310,25 @@ func (l *Loader) handleMessages() {
 						// Channel is full, ready signal already sent
 					}
 					continue
-				} else {
-					fmt.Fprintf(os.Stderr, "DEBUG: First message is not ready signal: %s\n", readyHeader.Name)
 				}
 			}
 
 			// Handle regular request/response messages
-			requestID := mesg.Sequence // mesg.Sequence is now uint32
+			requestID := mesg.Sequence
 
 			l.requestMutex.RLock()
 			responseChan, exists := l.pendingRequests[requestID]
 			l.requestMutex.RUnlock()
 
 			if exists {
-				fmt.Fprintf(os.Stderr, "DEBUG: Found pending request for ID %d, forwarding response\n", requestID)
 				select {
 				case responseChan <- mesg.Data:
-					fmt.Fprintf(os.Stderr, "DEBUG: Successfully forwarded response for ID %d\n", requestID)
+					// 성공적으로 전송됨
 				case <-l.loadCtx.Done():
 					return
 				default:
-					fmt.Fprintf(os.Stderr, "DEBUG: Response channel full for ID %d\n", requestID)
+					// 채널이 가득 찬 경우 - 호출자가 타임아웃될 것임
 				}
-			} else {
-				fmt.Fprintf(os.Stderr, "DEBUG: No pending request found for ID %d\n", requestID)
 			}
 		}
 	}
