@@ -35,6 +35,9 @@ type Loader struct {
 
 	// Add ready signal channel
 	readySignal chan struct{}
+
+	// Add shutdown acknowledgment channel
+	shutdownAck chan struct{}
 }
 
 func NewLoader(path, name, version string) *Loader {
@@ -46,6 +49,7 @@ func NewLoader(path, name, version string) *Loader {
 		multiplexer:     nil,
 		pendingRequests: make(map[uint32]chan []byte), // Changed uint64 to uint32
 		readySignal:     make(chan struct{}, 1),
+		shutdownAck:     make(chan struct{}, 1),
 		// wg is initialized to its zero value, which is ready to use.
 	}
 }
@@ -91,18 +95,42 @@ func (l *Loader) Close() error {
 		return fmt.Errorf("loader already closed")
 	}
 
-	// 1. 먼저 컨텍스트를 취소하여 shutdown 신호 전송
+	var closeErr error
+
+	// 1. Send graceful shutdown signal to plugin if multiplexer is available
+	if l.multiplexer != nil && l.loadCtx != nil {
+		shutdownHeader := Header{
+			Name:    "shutdown",
+			IsError: false,
+			Payload: []byte("graceful shutdown"),
+		}
+
+		if shutdownData, err := shutdownHeader.MarshalBinary(); err == nil {
+			// Try to send shutdown signal with a short timeout
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer shutdownCancel()
+
+			if err := l.multiplexer.WriteMessage(shutdownCtx, shutdownData); err == nil {
+				fmt.Fprintf(os.Stderr, "Loader: Sent graceful shutdown signal to plugin\n")
+
+				// Wait for shutdown acknowledgment (no timeout)
+				<-l.shutdownAck
+				fmt.Fprintf(os.Stderr, "Loader: Received shutdown acknowledgment\n")
+			}
+		}
+	}
+
+	// 2. Cancel the load context
 	if l.cancelLoad != nil {
 		l.cancelLoad()
 	}
 
-	// 2. 프로세스를 먼저 종료하여 파이프를 닫음 (고루틴이 블로킹에서 벗어나도록)
-	var closeErr error
+	// 3. Close the process (this will close pipes and signal goroutines to exit)
 	if l.process != nil {
 		closeErr = l.process.Close()
 	}
 
-	// 3. 타임아웃과 함께 고루틴 완료 대기
+	// 4. Wait for goroutines to complete with timeout
 	done := make(chan struct{})
 	go func() {
 		l.wg.Wait()
@@ -111,9 +139,8 @@ func (l *Loader) Close() error {
 
 	select {
 	case <-done:
-		// 정상적으로 종료됨
+		fmt.Fprintf(os.Stderr, "Loader: All goroutines completed\n")
 	case <-time.After(2 * time.Second):
-		// 타임아웃 - 강제 종료
 		fmt.Fprintf(os.Stderr, "Warning: Loader close timed out, some goroutines may not have finished\n")
 	}
 
@@ -311,6 +338,17 @@ func (l *Loader) handleMessages() {
 					}
 					continue
 				}
+			}
+
+			// Handle shutdown acknowledgment
+			var header Header
+			if err := header.UnmarshalBinary(mesg.Data); err == nil && header.Name == "shutdown_ack" {
+				select {
+				case l.shutdownAck <- struct{}{}:
+				default:
+					// Channel is full, ack already sent
+				}
+				continue
 			}
 
 			// Handle regular request/response messages

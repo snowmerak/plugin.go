@@ -29,5 +29,5 @@ func NewJSONLoaderAdapter[Req, Resp any](loader *Loader) *LoaderAdapter[Req, Res
 		// 	return string(data), nil
 		// },
 	}
-	return NewLoaderAdapter[Req, Resp](loader, serializer)
+	return NewLoaderAdapter(loader, serializer)
 }

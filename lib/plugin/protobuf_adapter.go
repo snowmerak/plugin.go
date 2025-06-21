@@ -39,5 +39,5 @@ func NewProtobufLoaderAdapter[Req proto.Message, Resp proto.Message](
 		// 	return string(data), nil
 		// },
 	}
-	return NewLoaderAdapter[Req, Resp](loader, serializer)
+	return NewLoaderAdapter(loader, serializer)
 }

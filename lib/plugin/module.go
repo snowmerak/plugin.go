@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/snowmerak/plugin.go/lib/multiplexer"
 )
@@ -200,9 +201,12 @@ type NodeInterface interface {
 }
 
 type Module struct {
-	multiplexer NodeInterface
-	handler     map[string]Handler
-	handlerLock sync.RWMutex
+	multiplexer  NodeInterface
+	handler      map[string]Handler
+	handlerLock  sync.RWMutex
+	shutdownChan chan struct{}
+	shutdownOnce sync.Once
+	activeJobs   sync.WaitGroup
 }
 
 func New(reader io.Reader, writer io.Writer) *Module {
@@ -217,8 +221,9 @@ func New(reader io.Reader, writer io.Writer) *Module {
 	mux := multiplexer.New(reader, writer)
 
 	return &Module{
-		multiplexer: &nodeWrapper{multiplexer: mux},
-		handler:     make(map[string]Handler),
+		multiplexer:  &nodeWrapper{multiplexer: mux},
+		handler:      make(map[string]Handler),
+		shutdownChan: make(chan struct{}),
 	}
 }
 
@@ -258,54 +263,178 @@ func (m *Module) SendReady(ctx context.Context) error {
 	return m.multiplexer.WriteMessage(ctx, readyData)
 }
 
+// Shutdown initiates graceful shutdown of the module
+func (m *Module) Shutdown() {
+	m.shutdownOnce.Do(func() {
+		close(m.shutdownChan)
+	})
+}
+
+// IsShutdown returns true if the module is shutting down
+func (m *Module) IsShutdown() bool {
+	select {
+	case <-m.shutdownChan:
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Module) Listen(ctx context.Context) error {
 	recv, err := m.multiplexer.ReadMessage(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to read message: %w", err)
 	}
 
-	for mesg := range recv {
-		var requestHeader Header
-		if err := requestHeader.UnmarshalBinary(mesg.Data); err != nil {
-			// Cannot reliably form a response if header is malformed. Log and continue.
-			continue // Continue to the next message
+	// Create a context that gets cancelled on shutdown or parent context cancellation
+	listenCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Monitor for shutdown signal
+	go func() {
+		select {
+		case <-m.shutdownChan:
+			cancel()
+		case <-ctx.Done():
+			cancel()
 		}
+	}()
 
-		m.handlerLock.RLock()
-		targetHandler, exists := m.handler[requestHeader.Name]
-		m.handlerLock.RUnlock()
+	for {
+		select {
+		case mesg, ok := <-recv:
+			if !ok {
+				// Channel closed, exit gracefully
+				break
+			}
 
-		var responseHeader Header
-		responseHeader.Name = requestHeader.Name
+			// Check for shutdown message
+			var header Header
+			if err := header.UnmarshalBinary(mesg.Data); err == nil && header.Name == "shutdown" {
+				fmt.Fprintf(os.Stderr, "Plugin: Received shutdown signal\n")
+				m.Shutdown()
 
-		if !exists {
-			errMsg := fmt.Sprintf("no handler registered for service: %s", requestHeader.Name)
+				// Send shutdown acknowledgment
+				ackHeader := Header{
+					Name:    "shutdown_ack",
+					IsError: false,
+					Payload: []byte("shutting down"),
+				}
+
+				if ackData, err := ackHeader.MarshalBinary(); err == nil {
+					m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
+				}
+
+				// Wait for active jobs to complete with timeout
+				done := make(chan struct{})
+				go func() {
+					m.activeJobs.Wait()
+					close(done)
+				}()
+
+				select {
+				case <-done:
+					fmt.Fprintf(os.Stderr, "Plugin: All active jobs completed, shutting down gracefully\n")
+				case <-time.After(5 * time.Second):
+					fmt.Fprintf(os.Stderr, "Plugin: Shutdown timeout, forcing exit\n")
+				}
+
+				return nil
+			}
+
+			// Process regular messages
+			m.activeJobs.Add(1)
+			go func(msg *OldMessage) {
+				defer m.activeJobs.Done()
+				m.processMessage(listenCtx, msg)
+			}(mesg)
+
+		case <-listenCtx.Done():
+			// Context cancelled (shutdown or parent context)
+			fmt.Fprintf(os.Stderr, "Plugin: Context cancelled, waiting for active jobs to complete\n")
+
+			// Wait for active jobs to complete with timeout
+			done := make(chan struct{})
+			go func() {
+				m.activeJobs.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				fmt.Fprintf(os.Stderr, "Plugin: All active jobs completed\n")
+			case <-time.After(5 * time.Second):
+				fmt.Fprintf(os.Stderr, "Plugin: Shutdown timeout reached\n")
+			}
+
+			return listenCtx.Err()
+		}
+	}
+}
+
+// processMessage handles a single message asynchronously
+func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
+	// Check if we're shutting down before processing
+	if m.IsShutdown() {
+		return
+	}
+
+	var requestHeader Header
+	if err := requestHeader.UnmarshalBinary(mesg.Data); err != nil {
+		// Cannot reliably form a response if header is malformed. Just return.
+		return
+	}
+
+	// Check shutdown again after unmarshaling
+	if m.IsShutdown() {
+		// Send busy response if shutting down
+		responseHeader := Header{
+			Name:    requestHeader.Name,
+			IsError: true,
+			Payload: []byte("service unavailable: shutting down"),
+		}
+		if responseData, err := responseHeader.MarshalBinary(); err == nil {
+			m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData)
+		}
+		return
+	}
+
+	m.handlerLock.RLock()
+	targetHandler, exists := m.handler[requestHeader.Name]
+	m.handlerLock.RUnlock()
+
+	var responseHeader Header
+	responseHeader.Name = requestHeader.Name
+
+	if !exists {
+		errMsg := fmt.Sprintf("no handler registered for service: %s", requestHeader.Name)
+		errPayload := []byte(errMsg)
+		responseHeader.IsError = true
+		responseHeader.Payload = errPayload
+	} else {
+		// Execute handler with context check
+		appResult, criticalErr := targetHandler(requestHeader.Payload)
+
+		if criticalErr != nil {
+			errMsg := fmt.Sprintf("critical internal error processing request for %s: %v", requestHeader.Name, criticalErr)
 			errPayload := []byte(errMsg)
 			responseHeader.IsError = true
 			responseHeader.Payload = errPayload
 		} else {
-			appResult, criticalErr := targetHandler(requestHeader.Payload)
-
-			if criticalErr != nil {
-				errMsg := fmt.Sprintf("critical internal error processing request for %s: %v", requestHeader.Name, criticalErr)
-				errPayload := []byte(errMsg)
-				responseHeader.IsError = true
-				responseHeader.Payload = errPayload
-			} else {
-				responseHeader.IsError = appResult.IsError
-				responseHeader.Payload = appResult.Payload
-			}
-		}
-
-		responseData, err := responseHeader.MarshalBinary()
-		if err != nil {
-			continue // Try to process next message
-		}
-
-		if err := m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData); err != nil {
-			return fmt.Errorf("failed to write response for %s: %w", responseHeader.Name, err)
+			responseHeader.IsError = appResult.IsError
+			responseHeader.Payload = appResult.Payload
 		}
 	}
 
-	return nil
+	responseData, err := responseHeader.MarshalBinary()
+	if err != nil {
+		// Cannot marshal response, just return
+		return
+	}
+
+	// Send response back with the original message ID for proper correlation
+	if err := m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData); err != nil {
+		// Log error to stderr if possible, but don't fail the entire listener
+		fmt.Fprintf(os.Stderr, "Plugin: failed to write response for %s: %v\n", responseHeader.Name, err)
+	}
 }

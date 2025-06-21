@@ -18,10 +18,6 @@ type mockReadWriter struct {
 	writeErr  error
 }
 
-func newMockReadWriter(data []byte) *mockReadWriter {
-	return &mockReadWriter{readData: data}
-}
-
 func (m *mockReadWriter) Read(p []byte) (n int, err error) {
 	if m.readErr != nil {
 		return 0, m.readErr
