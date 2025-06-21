@@ -117,268 +117,352 @@ go get github.com/snowmerak/plugin.go
 
 ## 사용 가이드
 
+### 완전한 작동 예제
+
+이 라이브러리는 실제 사용 패턴을 보여주는 완전한 작동 예제를 `example/` 디렉토리에 포함하고 있습니다.
+
+#### 예제 빌드 및 실행
+
+1. 플러그인 실행 파일 빌드:
+   ```bash
+   cd example
+   go build -o plugins/echo/echo ./plugins/echo
+   go build -o plugins/calculator/calculator ./plugins/calculator
+   ```
+
+2. 호스트 애플리케이션 실행:
+   ```bash
+   go run ./host
+   ```
+
 ### 클라이언트 측 (플러그인 로드 및 호출)
 
-호스트 애플리케이션은 `plugin.Loader`와 `LoaderAdapter`를 사용합니다.
+다음은 `example/host/main.go`의 완전한 예제입니다:
 
 ```go
 package main
 
 import (
 	"context"
-	"encoding/json" // 플러그인 측 예제에서 헬퍼를 사용하지 않는 경우
 	"fmt"
 	"log"
-	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/snowmerak/plugin.go/lib/plugin"
-	// 프로토콜 버퍼 예제의 경우 생성된 프로토콜 버퍼 패키지를 가져옵니다:
-	// "your_project_path/mypb"
-	// "google.golang.org/protobuf/proto"
 )
 
-// 클라이언트 및 플러그인용 예제 JSON 타입
-type MyJSONRequest struct {
-	Data string `json:"data"`
-}
-
-type MyJSONResponse struct {
-	Result string `json:"result"`
-}
-
-// 예제 프로토콜 버퍼 타입 (mypb 패키지에서 생성되었다고 가정)
-/*
-// mypb/my.proto (예제)
-// syntax = "proto3";
-// package mypb;
-// option go_package = "your_project_path/mypb";
-// message MyProtoRequest {
-//   string input = 1;
-// }
-// message MyProtoResponse {
-//   string output = 1;
-// }
-
-// Go 코드 (protoc에 의해 생성된 mypb/my.pb.go)
-// 이 타입들이 proto.Message를 구현하는지 확인
-type MyProtoRequest struct {
-	// ... 생성된 필드 ...
-	Input string
-}
-// ... MyProtoRequest에 대한 proto.Message 메서드 ...
-
-type MyProtoResponse struct {
-	// ... 생성된 필드 ...
-	Output string
-}
-// ... MyProtoResponse에 대한 proto.Message 메서드 ...
-// func (m *MyProtoResponse) GetOutput() string { if m != nil { return m.Output } return "" }
-*/
-
 func main() {
-	// 플러그인 실행 파일이 빌드되었고 경로가 올바른지 확인합니다.
-	// 예: go build -o ./myplugin ./path/to/plugin/main.go
-	loader := plugin.NewLoader("./myplugin", "myplugin", "v1.0.0")
+	fmt.Println("=== Plugin.go 호스트 애플리케이션 시작 ===")
 
-	// 타임아웃 및 취소를 위해 컨텍스트 사용
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Echo 플러그인 테스트
+	fmt.Println("\n--- Echo Plugin 테스트 ---")
+	if err := testEchoPlugin(ctx); err != nil {
+		log.Printf("Echo 플러그인 테스트 실패: %v", err)
+	}
+
+	// Calculator 플러그인 테스트
+	fmt.Println("\n--- Calculator Plugin 테스트 ---")
+	if err := testCalculatorPlugin(ctx); err != nil {
+		log.Printf("Calculator 플러그인 테스트 실패: %v", err)
+	}
+
+	fmt.Println("\n=== 모든 테스트 완료 ===")
+}
+
+// Echo 플러그인 테스트 함수
+func testEchoPlugin(ctx context.Context) error {
+	pluginPath := filepath.Join("..", "plugins", "echo", "echo")
+	loader := plugin.NewLoader(pluginPath, "echo", "v1.0.0")
+
 	if err := loader.Load(ctx); err != nil {
-		log.Fatalf("플러그인 로드 실패: %v", err)
+		return fmt.Errorf("Echo 플러그인 로드 실패: %w", err)
 	}
 	defer func() {
 		if err := loader.Close(); err != nil {
-			log.Printf("로더 닫기 오류: %v", err)
+			log.Printf("Echo 로더 닫기 오류: %v", err)
 		}
 	}()
 
-	// --- JSON 어댑터 사용 ---
-	// 참고: NewJSONLoaderAdapter로 수정됨
-	jsonAdapter := plugin.NewJSONLoaderAdapter[MyJSONRequest, MyJSONResponse](loader)
-	jsonReq := MyJSONRequest{Data: "클라이언트에서 온 JSON 안녕하세요"}
-
-	fmt.Println("클라이언트: HandleJSON 호출 중...")
-	jsonResp, err := jsonAdapter.Call(ctx, "HandleJSON", jsonReq)
-	if err != nil {
-		log.Printf("클라이언트: HandleJSON에 대한 JSON 호출 오류: %v", err)
-	} else {
-		fmt.Printf("클라이언트: HandleJSON의 JSON 응답: %+v\n", jsonResp)
+	// JSON 어댑터 생성
+	type EchoRequest struct {
+		Message string `json:"message"`
+	}
+	type EchoResponse struct {
+		Echo string `json:"echo"`
 	}
 
-	// 애플리케이션 오류를 반환할 수 있는 서비스 호출 예제
-	fmt.Println("클라이언트: 'error' 데이터로 HandleJSON 호출 중...")
-	jsonReqError := MyJSONRequest{Data: "error"}
-	_, err = jsonAdapter.Call(ctx, "HandleJSON", jsonReqError)
-	if err != nil {
-		// 이 오류에는 플러그인의 메시지가 포함됩니다.
-		log.Printf("클라이언트: HandleJSON에 대한 예상된 JSON 호출 오류 (data='error'): %v", err)
-	} else {
-		fmt.Println("클라이언트: HandleJSON (data='error')에 대한 오류가 예상되었지만 아무것도 받지 못했습니다.")
+	adapter := plugin.NewJSONLoaderAdapter[EchoRequest, EchoResponse](loader)
+
+	// 테스트 케이스들
+	testCases := []struct {
+		name    string
+		request EchoRequest
+	}{
+		{"기본 메시지", EchoRequest{Message: "안녕하세요!"}},
+		{"빈 메시지", EchoRequest{Message: ""}},
+		{"긴 메시지", EchoRequest{Message: "이것은 매우 긴 메시지입니다. 플러그인이 긴 내용도 잘 처리할 수 있는지 테스트해봅시다."}},
 	}
 
-
-	// --- 프로토콜 버퍼 어댑터 사용 ---
-	// (프로토콜 버퍼 정의가 있는 경우 주석 해제 및 수정)
-	/*
-	// 참고: NewProtobufLoaderAdapter로 수정됨
-	protoAdapter := plugin.NewProtobufLoaderAdapter[*mypb.MyProtoRequest, *mypb.MyProtoResponse](
-		loader,
-		func() *mypb.MyProtoResponse { return new(mypb.MyProtoResponse) }, // 응답 타입용 팩토리
-	)
-	protoReq := &mypb.MyProtoRequest{Input: "클라이언트에서 온 프로토콜 버퍼 안녕하세요"}
-
-	fmt.Println("클라이언트: HandleProto 호출 중...")
-	protoResp, err := protoAdapter.Call(ctx, "HandleProto", protoReq)
-	if err != nil {
-		log.Printf("클라이언트: HandleProto에 대한 프로토콜 버퍼 호출 오류: %v", err)
-	} else {
-		fmt.Printf("클라이언트: HandleProto의 프로토콜 버퍼 응답: %s\n", protoResp.GetOutput()) // GetOutput이 있다고 가정
+	for _, tc := range testCases {
+		fmt.Printf("  테스트: %s\n", tc.name)
+		resp, err := adapter.Call(ctx, "Echo", tc.request)
+		if err != nil {
+			fmt.Printf("    오류: %v\n", err)
+			continue
+		}
+		fmt.Printf("    요청: %s\n", tc.request.Message)
+		fmt.Printf("    응답: %s\n", resp.Echo)
 	}
-	*/
 
-	// 존재하지 않는 서비스 호출 예제
-	fmt.Println("클라이언트: NonExistentService 호출 중...")
-	_, err = jsonAdapter.Call(ctx, "NonExistentService", MyJSONRequest{Data: "test"})
-	if err != nil {
-		log.Printf("클라이언트: NonExistentService에 대한 예상된 오류: %v", err)
-	} else {
-		fmt.Println("클라이언트: NonExistentService에 대한 오류가 예상되었지만 아무것도 받지 못했습니다.")
-	}
+	return nil
 }
+
+// Calculator 플러그인 테스트 함수
+func testCalculatorPlugin(ctx context.Context) error {
+	pluginPath := filepath.Join("..", "plugins", "calculator", "calculator")
+	loader := plugin.NewLoader(pluginPath, "calculator", "v1.0.0")
+
+	if err := loader.Load(ctx); err != nil {
+		return fmt.Errorf("Calculator 플러그인 로드 실패: %w", err)
+	}
+	defer func() {
+		if err := loader.Close(); err != nil {
+			log.Printf("Calculator 로더 닫기 오류: %v", err)
+		}
+	}()
+
+	// JSON 어댑터 생성
+	type CalculateRequest struct {
+		Operation string  `json:"operation"`
+		A         float64 `json:"a"`
+		B         float64 `json:"b"`
+	}
+	type CalculateResponse struct {
+		Result float64 `json:"result"`
+		Error  string  `json:"error,omitempty"`
+	}
+
+	adapter := plugin.NewJSONLoaderAdapter[CalculateRequest, CalculateResponse](loader)
+
+	// 테스트 케이스들
+	testCases := []struct {
+		name    string
+		request CalculateRequest
+	}{
+		{"덧셈", CalculateRequest{Operation: "add", A: 10, B: 5}},
+		{"뺄셈", CalculateRequest{Operation: "subtract", A: 10, B: 3}},
+		{"곱셈", CalculateRequest{Operation: "multiply", A: 7, B: 6}},
+		{"나눗셈", CalculateRequest{Operation: "divide", A: 20, B: 4}},
+		{"0으로 나누기", CalculateRequest{Operation: "divide", A: 10, B: 0}},
+		{"잘못된 연산", CalculateRequest{Operation: "invalid", A: 1, B: 2}},
+	}
+
+	for _, tc := range testCases {
+		fmt.Printf("  테스트: %s\n", tc.name)
+		resp, err := adapter.Call(ctx, "Calculate", tc.request)
+		if err != nil {
+			fmt.Printf("    플러그인 오류: %v\n", err)
+			continue
+		}
+
+		if resp.Error != "" {
+			fmt.Printf("    계산 오류: %s\n", resp.Error)
+		} else {
+			fmt.Printf("    %g %s %g = %g\n", tc.request.A, tc.request.Operation, tc.request.B, resp.Result)
+		}
+	}
+
+	return nil
 ```
 
 ### 플러그인 측 (플러그인 실행 파일 구현)
 
-플러그인 실행 파일은 `plugin.Module`을 사용하고 핸들러를 등록합니다. 타입이 지정된 핸들러는 `plugin.HandlerAdapter`를 사용하여 래핑됩니다.
+다음은 `example/plugins/echo/main.go`의 완전한 Echo 플러그인 예제입니다:
 
 ```go
 package main
 
 import (
 	"context"
-	"encoding/json" // JSON 핸들러 어댑터에 필요
+	"encoding/json"
 	"fmt"
-	"log"
-	"os" // os.Stdin, os.Stdout용
+	"os"
 
 	"github.com/snowmerak/plugin.go/lib/plugin"
-	// 프로토콜 버퍼 예제의 경우 생성된 프로토콜 버퍼 패키지를 가져옵니다:
-	// "your_project_path/mypb"
-	// "google.golang.org/protobuf/proto"
 )
 
-// --- JSON 핸들러 예제 ---
-
-// MyJSONRequest 및 MyJSONResponse는 클라이언트의 정의와 일치해야 합니다.
-type MyJSONRequest struct {
-	Data string `json:"data"`
+// Echo 요청/응답 타입 정의
+type EchoRequest struct {
+	Message string `json:"message"`
 }
 
-type MyJSONResponse struct {
-	Result string `json:"result"`
+type EchoResponse struct {
+	Echo string `json:"echo"`
 }
 
-// 타입이 지정된 JSON 핸들러 함수
-func handleJSONRequestLogic(req MyJSONRequest) (MyJSONResponse, bool) {
-	fmt.Fprintf(os.Stderr, "플러그인: HandleJSON에 대한 JSON 요청 수신: %+v\n", req)
-	if req.Data == "error" {
-		// 애플리케이션 오류 시뮬레이션
-		return MyJSONResponse{Result: "플러그인: 시뮬레이션된 JSON 오류 발생"}, true // true는 애플리케이션 오류를 나타냄
+// Echo 핸들러 로직
+func handleEcho(req EchoRequest) (EchoResponse, bool) {
+	// stderr로 로그 출력 (디버깅용)
+	fmt.Fprintf(os.Stderr, "Echo Plugin: 메시지 수신: '%s'\n", req.Message)
+
+	// 간단하게 "Echo: " 접두사를 붙여서 반환
+	response := EchoResponse{
+		Echo: "Echo: " + req.Message,
 	}
-	return MyJSONResponse{Result: "플러그인: JSON 데이터 처리됨 - " + req.Data}, false // false는 성공을 나타냄
-}
 
-// --- 프로토콜 버퍼 핸들러 예제 ---
-/*
-// MyProtoRequest 및 MyProtoResponse는 클라이언트의 정의와 일치해야 하며
-// proto.Message를 구현해야 합니다.
-type MyProtoRequest struct {
-	// ... 생성된 필드 ...
-	Input string
+	return response, false // false = 성공
 }
-// ... MyProtoRequest에 대한 proto.Message 메서드 ...
-// func (m *MyProtoRequest) GetInput() string { if m != nil { return m.Input } return "" }
-
-
-type MyProtoResponse struct {
-	// ... 생성된 필드 ...
-	Output string
-}
-// ... MyProtoResponse에 대한 proto.Message 메서드 ...
-
-// 타입이 지정된 프로토콜 버퍼 핸들러 함수
-func handleProtoRequestLogic(req *mypb.MyProtoRequest) (*mypb.MyProtoResponse, bool) {
-	fmt.Fprintf(os.Stderr, "플러그인: HandleProto에 대한 프로토콜 버퍼 요청 수신: %s\n", req.GetInput())
-	if req.GetInput() == "error" {
-		return &mypb.MyProtoResponse{Output: "플러그인: 시뮬레이션된 프로토콜 버퍼 오류"}, true
-	}
-	return &mypb.MyProtoResponse{Output: "플러그인이 말합니다: 안녕하세요 " + req.GetInput()}, false
-}
-*/
 
 func main() {
-	// 호스트로부터 요청을 읽기 위해 os.Stdin 사용, 호스트로 응답을 보내기 위해 os.Stdout 사용
+	fmt.Fprintln(os.Stderr, "Echo Plugin: 시작됨")
+
+	// stdin/stdout을 통해 호스트와 통신하는 모듈 생성
 	module := plugin.New(os.Stdin, os.Stdout)
 
-	// --- JSON 핸들러 등록 ---
-	// 1. 요청 타입에 대한 언마샬 함수 정의
-	unmarshalJSONReq := func(data []byte) (MyJSONRequest, error) {
-		var r MyJSONRequest
-		err := json.Unmarshal(data, &r)
-		return r, err
+	// JSON 직렬화/역직렬화 함수 정의
+	unmarshalReq := func(data []byte) (EchoRequest, error) {
+		var req EchoRequest
+		err := json.Unmarshal(data, &req)
+		return req, err
 	}
-	// 2. 응답 타입에 대한 마샬 함수 정의
-	marshalJSONResp := func(resp MyJSONResponse) ([]byte, error) {
+
+	marshalResp := func(resp EchoResponse) ([]byte, error) {
 		return json.Marshal(resp)
 	}
-	// 3. HandlerAdapter 생성
-	jsonHandlerAdapter := plugin.NewHandlerAdapter[MyJSONRequest, MyJSONResponse](
-		"HandleJSON",             // 서비스 이름 (어댑터에서 로깅/디버깅용)
-		unmarshalJSONReq,         // 요청 바이트를 언마샬하는 함수
-		marshalJSONResp,          // 응답 객체를 마샬하는 함수
-		handleJSONRequestLogic,   // 실제 타입이 지정된 핸들러 로직
+
+	// 핸들러 어댑터 생성
+	echoAdapter := plugin.NewHandlerAdapter[EchoRequest, EchoResponse](
+		"Echo",       // 서비스 이름
+		unmarshalReq, // 요청 언마샬링 함수
+		marshalResp,  // 응답 마샬링 함수
+		handleEcho,   // 실제 핸들러 로직
 	)
-	// 4. 조정된 핸들러를 모듈에 등록
-	plugin.RegisterHandler(module, "HandleJSON", jsonHandlerAdapter.ToPluginHandler())
 
+	// 모듈에 핸들러 등록
+	plugin.RegisterHandler(module, "Echo", echoAdapter.ToPluginHandler())
 
-	// --- 프로토콜 버퍼 핸들러 등록 ---
-	// (프로토콜 버퍼 정의가 있는 경우 주석 해제 및 수정)
-	/*
-	// 1. 프로토콜 버퍼 요청 타입에 대한 언마샬 함수 정의
-	unmarshalProtoReq := func(data []byte) (*mypb.MyProtoRequest, error) {
-		instance := new(mypb.MyProtoRequest) // 또는 Req가 인터페이스/포인터인 경우 팩토리 사용
-		err := proto.Unmarshal(data, instance)
-		return instance, err
+	// Ready 신호 전송 (로더가 첫 번째 메시지를 기다림)
+	if err := module.SendReady(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "Echo Plugin: ready 메시지 전송 실패: %v\n", err)
+		os.Exit(1)
 	}
-	// 2. 프로토콜 버퍼 응답 타입에 대한 마샬 함수 정의
-	marshalProtoResp := func(resp *mypb.MyProtoResponse) ([]byte, error) {
-		return proto.Marshal(resp)
-	}
-	// 3. 프로토콜 버퍼용 HandlerAdapter 생성
-	protoHandlerAdapter := plugin.NewHandlerAdapter[*mypb.MyProtoRequest, *mypb.MyProtoResponse](
-		"HandleProto",
-		unmarshalProtoReq,
-		marshalProtoResp,
-		handleProtoRequestLogic,
-	)
-	// 4. 조정된 프로토콜 버퍼 핸들러 등록
-	plugin.RegisterHandler(module, "HandleProto", protoHandlerAdapter.ToPluginHandler())
-	*/
 
-	fmt.Fprintln(os.Stderr, "플러그인: 시작되었으며 요청 대기 중...")
-	// 컨텍스트가 취소될 때까지 또는 무기한으로 요청 수신
+	fmt.Fprintln(os.Stderr, "Echo Plugin: 요청 대기 중...")
+
+	// 무한 루프로 요청 처리
 	if err := module.Listen(context.Background()); err != nil {
-		// 리스너를 중지시키는 치명적인 오류 기록
-		log.Fatalf("플러그인: 리스너 오류: %v", err)
+		fmt.Fprintf(os.Stderr, "Echo Plugin: 오류 발생: %v\n", err)
+		os.Exit(1)
 	}
-	fmt.Fprintln(os.Stderr, "플러그인: 리스너 중지됨.")
+}
+```
+
+그리고 `example/plugins/calculator/main.go`의 Calculator 플러그인 예제:
+
+```go
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/snowmerak/plugin.go/lib/plugin"
+)
+
+// Calculator 요청/응답 타입 정의
+type CalculateRequest struct {
+	Operation string  `json:"operation"`
+	A         float64 `json:"a"`
+	B         float64 `json:"b"`
 }
 
-// 이 플러그인을 빌드하려면:
-// go build -o ./myplugin ./path/to/plugin/main.go
+type CalculateResponse struct {
+	Result float64 `json:"result"`
+	Error  string  `json:"error,omitempty"`
+}
+
+// Calculator 핸들러 로직
+func handleCalculate(req CalculateRequest) (CalculateResponse, bool) {
+	fmt.Fprintf(os.Stderr, "Calculator Plugin: 연산 요청: %s %g %g\n",
+		req.Operation, req.A, req.B)
+
+	var result float64
+	var errMsg string
+
+	switch req.Operation {
+	case "add":
+		result = req.A + req.B
+	case "subtract":
+		result = req.A - req.B
+	case "multiply":
+		result = req.A * req.B
+	case "divide":
+		if req.B == 0 {
+			errMsg = "0으로 나눌 수 없습니다"
+		} else {
+			result = req.A / req.B
+		}
+	default:
+		errMsg = fmt.Sprintf("지원되지 않는 연산: %s", req.Operation)
+	}
+
+	response := CalculateResponse{
+		Result: result,
+		Error:  errMsg,
+	}
+
+	// 애플리케이션 에러로 처리하지 않고 응답에 포함
+	// 이는 비즈니스 로직 에러와 시스템 에러를 구분하는 예제
+	return response, false // 항상 false (성공) - 에러는 응답 객체에서 처리
+}
+
+func main() {
+	fmt.Fprintln(os.Stderr, "Calculator Plugin: 시작됨")
+
+	// stdin/stdout을 통해 호스트와 통신하는 모듈 생성
+	module := plugin.New(os.Stdin, os.Stdout)
+
+	// JSON 직렬화/역직렬화 함수 정의
+	unmarshalReq := func(data []byte) (CalculateRequest, error) {
+		var req CalculateRequest
+		err := json.Unmarshal(data, &req)
+		return req, err
+	}
+
+	marshalResp := func(resp CalculateResponse) ([]byte, error) {
+		return json.Marshal(resp)
+	}
+
+	// 핸들러 어댑터 생성
+	calcAdapter := plugin.NewHandlerAdapter[CalculateRequest, CalculateResponse](
+		"Calculate",     // 서비스 이름
+		unmarshalReq,    // 요청 언마샬링 함수
+		marshalResp,     // 응답 마샬링 함수
+		handleCalculate, // 실제 핸들러 로직
+	)
+
+	// 모듈에 핸들러 등록
+	plugin.RegisterHandler(module, "Calculate", calcAdapter.ToPluginHandler())
+
+	// Ready 신호 전송 (로더가 첫 번째 메시지를 기다림)
+	if err := module.SendReady(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "Calculator Plugin: ready 메시지 전송 실패: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintln(os.Stderr, "Calculator Plugin: 요청 대기 중...")
+
+	// 무한 루프로 요청 처리
+	if err := module.Listen(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "Calculator Plugin: 오류 발생: %v\n", err)
+		os.Exit(1)
+}
 ```
 
 ## 오류 처리
