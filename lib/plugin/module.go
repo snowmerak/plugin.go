@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/snowmerak/plugin.go/lib/multiplexer"
@@ -201,12 +202,15 @@ type NodeInterface interface {
 }
 
 type Module struct {
-	multiplexer  NodeInterface
-	handler      map[string]Handler
-	handlerLock  sync.RWMutex
-	shutdownChan chan struct{}
-	shutdownOnce sync.Once
-	activeJobs   sync.WaitGroup
+	multiplexer       NodeInterface
+	handler           map[string]Handler
+	handlerLock       sync.RWMutex
+	shutdownChan      chan struct{}
+	forceShutdownChan chan struct{}
+	shutdownOnce      sync.Once
+	forceShutdownOnce sync.Once
+	activeJobs        sync.WaitGroup
+	activeJobCount    int64 // atomic counter for active jobs
 }
 
 func New(reader io.Reader, writer io.Writer) *Module {
@@ -221,9 +225,10 @@ func New(reader io.Reader, writer io.Writer) *Module {
 	mux := multiplexer.New(reader, writer)
 
 	return &Module{
-		multiplexer:  &nodeWrapper{multiplexer: mux},
-		handler:      make(map[string]Handler),
-		shutdownChan: make(chan struct{}),
+		multiplexer:       &nodeWrapper{multiplexer: mux},
+		handler:           make(map[string]Handler),
+		shutdownChan:      make(chan struct{}),
+		forceShutdownChan: make(chan struct{}),
 	}
 }
 
@@ -270,7 +275,14 @@ func (m *Module) Shutdown() {
 	})
 }
 
-// IsShutdown returns true if the module is shutting down
+// ForceShutdown initiates immediate shutdown of the module
+func (m *Module) ForceShutdown() {
+	m.forceShutdownOnce.Do(func() {
+		close(m.forceShutdownChan)
+	})
+}
+
+// IsShutdown returns true if the module is shutting down (gracefully)
 func (m *Module) IsShutdown() bool {
 	select {
 	case <-m.shutdownChan:
@@ -278,6 +290,21 @@ func (m *Module) IsShutdown() bool {
 	default:
 		return false
 	}
+}
+
+// IsForceShutdown returns true if the module is force shutting down
+func (m *Module) IsForceShutdown() bool {
+	select {
+	case <-m.forceShutdownChan:
+		return true
+	default:
+		return false
+	}
+}
+
+// getActiveJobCount returns the current number of active jobs
+func (m *Module) getActiveJobCount() int64 {
+	return atomic.LoadInt64(&m.activeJobCount)
 }
 
 func (m *Module) Listen(ctx context.Context) error {
@@ -295,6 +322,8 @@ func (m *Module) Listen(ctx context.Context) error {
 		select {
 		case <-m.shutdownChan:
 			cancel()
+		case <-m.forceShutdownChan:
+			cancel()
 		case <-ctx.Done():
 			cancel()
 		}
@@ -308,44 +337,90 @@ func (m *Module) Listen(ctx context.Context) error {
 				break
 			}
 
-			// Check for shutdown message
-			var header Header
-			if err := header.UnmarshalBinary(mesg.Data); err == nil && header.Name == "shutdown" {
-				fmt.Fprintf(os.Stderr, "Plugin: Received shutdown signal\n")
-				m.Shutdown()
-
-				// Send shutdown acknowledgment
-				ackHeader := Header{
-					Name:    "shutdown_ack",
-					IsError: false,
-					Payload: []byte("shutting down"),
-				}
-
-				if ackData, err := ackHeader.MarshalBinary(); err == nil {
-					m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
-				}
-
-				// Wait for active jobs to complete with timeout
-				done := make(chan struct{})
-				go func() {
-					m.activeJobs.Wait()
-					close(done)
-				}()
-
-				select {
-				case <-done:
-					fmt.Fprintf(os.Stderr, "Plugin: All active jobs completed, shutting down gracefully\n")
-				case <-time.After(5 * time.Second):
-					fmt.Fprintf(os.Stderr, "Plugin: Shutdown timeout, forcing exit\n")
-				}
-
-				return nil
+			// Check for force shutdown first - immediate exit
+			if m.IsForceShutdown() {
+				fmt.Fprintf(os.Stderr, "Plugin: Force shutdown detected, exiting immediately\n")
+				return ctx.Err()
 			}
 
-			// Process regular messages
+			// Check for shutdown message
+			var header Header
+			if err := header.UnmarshalBinary(mesg.Data); err == nil {
+				if header.Name == "shutdown" {
+					fmt.Fprintf(os.Stderr, "Plugin: Received graceful shutdown signal\n")
+					m.Shutdown()
+
+					// Send shutdown acknowledgment FIRST
+					ackHeader := Header{
+						Name:    "shutdown_ack",
+						IsError: false,
+						Payload: []byte("shutting down gracefully"),
+					}
+
+					if ackData, err := ackHeader.MarshalBinary(); err == nil {
+						m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
+						fmt.Fprintf(os.Stderr, "Plugin: Sent shutdown ACK to host\n")
+					}
+
+					// Give a moment for any pending jobs to be added to activeJobs
+					fmt.Fprintf(os.Stderr, "Plugin: Checking for active jobs...\n")
+					time.Sleep(100 * time.Millisecond)
+
+					initialJobCount := m.getActiveJobCount()
+					fmt.Fprintf(os.Stderr, "Plugin: Found %d active jobs, waiting for completion...\n", initialJobCount)
+
+					// Wait for active jobs to complete with timeout
+					done := make(chan struct{})
+					go func() {
+						m.activeJobs.Wait()
+						close(done)
+					}()
+
+					select {
+					case <-done:
+						fmt.Fprintf(os.Stderr, "Plugin: All active jobs completed, shutting down gracefully\n")
+					case <-time.After(10 * time.Second): // 10초 타임아웃
+						fmt.Fprintf(os.Stderr, "Plugin: Graceful shutdown timeout (10s), forcing exit\n")
+					case <-m.forceShutdownChan:
+						fmt.Fprintf(os.Stderr, "Plugin: Force shutdown received during graceful shutdown\n")
+					}
+
+					return nil
+				} else if header.Name == "force_shutdown" {
+					fmt.Fprintf(os.Stderr, "Plugin: Received force shutdown signal\n")
+					m.ForceShutdown()
+
+					// Send immediate acknowledgment
+					ackHeader := Header{
+						Name:    "force_shutdown_ack",
+						IsError: false,
+						Payload: []byte("force shutting down"),
+					}
+
+					if ackData, err := ackHeader.MarshalBinary(); err == nil {
+						m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
+					}
+
+					fmt.Fprintf(os.Stderr, "Plugin: Force shutdown - terminating immediately\n")
+					return nil
+				}
+			}
+
+			// ⚠️  수정된 로직: shutdown 중에도 이미 큐에 있는 요청들은 처리하되, 응답에 shutdown 경고 포함
+			if m.IsShutdown() {
+				fmt.Fprintf(os.Stderr, "Plugin: Processing queued request '%s' during shutdown\n", header.Name)
+				// 새로운 요청은 차단하지만, 이미 큐에 있던 요청은 처리
+				// continue 대신 처리를 계속함
+			}
+
+			// Process regular messages (only if not shutting down)
 			m.activeJobs.Add(1)
+			atomic.AddInt64(&m.activeJobCount, 1)
 			go func(msg *OldMessage) {
-				defer m.activeJobs.Done()
+				defer func() {
+					m.activeJobs.Done()
+					atomic.AddInt64(&m.activeJobCount, -1)
+				}()
 				m.processMessage(listenCtx, msg)
 			}(mesg)
 
@@ -374,10 +449,8 @@ func (m *Module) Listen(ctx context.Context) error {
 
 // processMessage handles a single message asynchronously
 func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
-	// Check if we're shutting down before processing
-	if m.IsShutdown() {
-		return
-	}
+	// 🔥 중요: shutdown 체크를 제거하여 이미 시작된 작업들이 완료될 수 있도록 함
+	// 새로운 요청만 Listen()에서 차단됨
 
 	var requestHeader Header
 	if err := requestHeader.UnmarshalBinary(mesg.Data); err != nil {
@@ -385,13 +458,12 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 		return
 	}
 
-	// Check shutdown again after unmarshaling
-	if m.IsShutdown() {
-		// Send busy response if shutting down
+	// Force shutdown인 경우에만 즉시 종료
+	if m.IsForceShutdown() {
 		responseHeader := Header{
 			Name:    requestHeader.Name,
 			IsError: true,
-			Payload: []byte("service unavailable: shutting down"),
+			Payload: []byte("service unavailable: force shutdown"),
 		}
 		if responseData, err := responseHeader.MarshalBinary(); err == nil {
 			m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData)
@@ -412,7 +484,9 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 		responseHeader.IsError = true
 		responseHeader.Payload = errPayload
 	} else {
-		// Execute handler with context check
+		// Execute handler - graceful shutdown 중에도 이미 시작된 작업은 완료됨
+		fmt.Fprintf(os.Stderr, "Plugin: Processing request '%s' (job %d)\n", requestHeader.Name, m.getActiveJobCount())
+
 		appResult, criticalErr := targetHandler(requestHeader.Payload)
 
 		if criticalErr != nil {
@@ -424,6 +498,8 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 			responseHeader.IsError = appResult.IsError
 			responseHeader.Payload = appResult.Payload
 		}
+
+		fmt.Fprintf(os.Stderr, "Plugin: Completed request '%s'\n", requestHeader.Name)
 	}
 
 	responseData, err := responseHeader.MarshalBinary()

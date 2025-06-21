@@ -38,18 +38,22 @@ type Loader struct {
 
 	// Add shutdown acknowledgment channel
 	shutdownAck chan struct{}
+
+	// Add force shutdown acknowledgment channel
+	forceShutdownAck chan struct{}
 }
 
 func NewLoader(path, name, version string) *Loader {
 	return &Loader{
-		Path:            path,
-		Name:            name,
-		Version:         version,
-		process:         nil,
-		multiplexer:     nil,
-		pendingRequests: make(map[uint32]chan []byte), // Changed uint64 to uint32
-		readySignal:     make(chan struct{}, 1),
-		shutdownAck:     make(chan struct{}, 1),
+		Path:             path,
+		Name:             name,
+		Version:          version,
+		process:          nil,
+		multiplexer:      nil,
+		pendingRequests:  make(map[uint32]chan []byte), // Changed uint64 to uint32
+		readySignal:      make(chan struct{}, 1),
+		shutdownAck:      make(chan struct{}, 1),
+		forceShutdownAck: make(chan struct{}, 1),
 		// wg is initialized to its zero value, which is ready to use.
 	}
 }
@@ -142,6 +146,68 @@ func (l *Loader) Close() error {
 		fmt.Fprintf(os.Stderr, "Loader: All goroutines completed\n")
 	case <-time.After(2 * time.Second):
 		fmt.Fprintf(os.Stderr, "Warning: Loader close timed out, some goroutines may not have finished\n")
+	}
+
+	return closeErr
+}
+
+// ForceClose forcibly shuts down the loader without waiting for graceful shutdown
+func (l *Loader) ForceClose() error {
+	if !l.closed.CompareAndSwap(false, true) {
+		return fmt.Errorf("loader already closed")
+	}
+
+	var closeErr error
+
+	// 1. Send force shutdown signal to plugin if multiplexer is available
+	if l.multiplexer != nil && l.loadCtx != nil {
+		forceShutdownHeader := Header{
+			Name:    "force_shutdown",
+			IsError: false,
+			Payload: []byte("force shutdown"),
+		}
+
+		if shutdownData, err := forceShutdownHeader.MarshalBinary(); err == nil {
+			// Try to send force shutdown signal with a short timeout
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer shutdownCancel()
+
+			if err := l.multiplexer.WriteMessage(shutdownCtx, shutdownData); err == nil {
+				fmt.Fprintf(os.Stderr, "Loader: Sent force shutdown signal to plugin\n")
+
+				// Wait for force shutdown acknowledgment with short timeout
+				select {
+				case <-l.forceShutdownAck:
+					fmt.Fprintf(os.Stderr, "Loader: Received force shutdown acknowledgment\n")
+				case <-time.After(500 * time.Millisecond):
+					fmt.Fprintf(os.Stderr, "Loader: Force shutdown ack timeout, proceeding anyway\n")
+				}
+			}
+		}
+	}
+
+	// 2. Cancel the load context immediately
+	if l.cancelLoad != nil {
+		l.cancelLoad()
+	}
+
+	// 3. Close the process immediately (this will force terminate)
+	if l.process != nil {
+		closeErr = l.process.Close()
+	}
+
+	// 4. Wait for goroutines to complete with shorter timeout
+	done := make(chan struct{})
+	go func() {
+		l.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		fmt.Fprintf(os.Stderr, "Loader: All goroutines completed (force)\n")
+	case <-time.After(500 * time.Millisecond):
+		fmt.Fprintf(os.Stderr, "Warning: Force close timed out quickly - some goroutines may still be running\n")
 	}
 
 	return closeErr
@@ -342,13 +408,22 @@ func (l *Loader) handleMessages() {
 
 			// Handle shutdown acknowledgment
 			var header Header
-			if err := header.UnmarshalBinary(mesg.Data); err == nil && header.Name == "shutdown_ack" {
-				select {
-				case l.shutdownAck <- struct{}{}:
-				default:
-					// Channel is full, ack already sent
+			if err := header.UnmarshalBinary(mesg.Data); err == nil {
+				if header.Name == "shutdown_ack" {
+					select {
+					case l.shutdownAck <- struct{}{}:
+					default:
+						// Channel is full, ack already sent
+					}
+					continue
+				} else if header.Name == "force_shutdown_ack" {
+					select {
+					case l.forceShutdownAck <- struct{}{}:
+					default:
+						// Channel is full, ack already sent
+					}
+					continue
 				}
-				continue
 			}
 
 			// Handle regular request/response messages
