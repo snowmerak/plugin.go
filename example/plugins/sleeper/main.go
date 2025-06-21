@@ -55,7 +55,7 @@ func main() {
 	}
 
 	// Create handler adapter
-	sleeperAdapter := plugin.NewHandlerAdapter[SleeperRequest, SleeperResponse](
+	sleeperAdapter := plugin.NewHandlerAdapter(
 		"Sleep",       // Service name
 		unmarshalReq,  // Request unmarshaling function
 		marshalResp,   // Response marshaling function

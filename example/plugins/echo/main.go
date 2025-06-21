@@ -43,7 +43,7 @@ func main() {
 	}
 
 	// Create handler adapter
-	echoAdapter := plugin.NewHandlerAdapter[EchoRequest, EchoResponse](
+	echoAdapter := plugin.NewHandlerAdapter(
 		"Echo",       // Service name
 		unmarshalReq, // Request unmarshaling function
 		marshalResp,  // Response marshaling function

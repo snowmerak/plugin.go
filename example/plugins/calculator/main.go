@@ -71,7 +71,7 @@ func main() {
 	}
 
 	// Create handler adapter
-	calcAdapter := plugin.NewHandlerAdapter[CalculateRequest, CalculateResponse](
+	calcAdapter := plugin.NewHandlerAdapter(
 		"Calculate",     // Service name
 		unmarshalReq,    // Request unmarshaling function
 		marshalResp,     // Response marshaling function
