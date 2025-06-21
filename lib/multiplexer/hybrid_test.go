@@ -14,8 +14,8 @@ func TestHybridNodeBasicFunctionality(t *testing.T) {
 		testData := []byte("Hello, small message!")
 
 		readerBuf, writerBuf := createConnectedBuffers()
-		sender := NewHybridNode(readerBuf, writerBuf)
-		receiver := NewHybridNode(writerBuf, readerBuf)
+		sender := NewHybridNode(nil, writerBuf)   // sender only writes
+		receiver := NewHybridNode(readerBuf, nil) // receiver only reads
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -54,8 +54,8 @@ func TestHybridNodeBasicFunctionality(t *testing.T) {
 		}
 
 		readerBuf, writerBuf := createConnectedBuffers()
-		sender := NewHybridNode(readerBuf, writerBuf)
-		receiver := NewHybridNode(writerBuf, readerBuf)
+		sender := NewHybridNode(nil, writerBuf)   // sender only writes
+		receiver := NewHybridNode(readerBuf, nil) // receiver only reads
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -116,24 +116,55 @@ func TestHybridNodeThresholdBehavior(t *testing.T) {
 			}
 
 			readerBuf, writerBuf := createConnectedBuffers()
-			node := NewHybridNode(readerBuf, writerBuf)
-			ctx := context.Background()
+			sender := NewHybridNode(nil, writerBuf)   // sender only writes
+			receiver := NewHybridNode(readerBuf, nil) // receiver only reads
 
-			// Test that the message is written successfully regardless of path
-			err := node.WriteMessageWithSequenceHybrid(ctx, 1, testData)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Start receiver to prevent deadlock
+			msgChan, err := receiver.ReadMessageHybrid(ctx)
 			if err != nil {
-				t.Fatalf("Failed to write message: %v", err)
+				t.Fatalf("Failed to start reader: %v", err)
 			}
 
-			// Verify the written data has the expected structure
-			written := writerBuf.Bytes()
-			if len(written) == 0 {
-				t.Fatal("No data was written")
+			// Write message in a goroutine
+			errChan := make(chan error, 1)
+			go func() {
+				errChan <- sender.WriteMessageWithSequenceHybrid(ctx, 1, testData)
+			}()
+
+			// Read the message
+			select {
+			case msg := <-msgChan:
+				if msg.Type != MessageHeaderTypeComplete {
+					t.Fatalf("Expected complete message, got type %d", msg.Type)
+				}
+				if len(msg.Data) != len(testData) {
+					t.Fatalf("Data length mismatch: expected %d, got %d", len(testData), len(msg.Data))
+				}
+				// Verify data content
+				for i, b := range msg.Data {
+					if b != testData[i] {
+						t.Fatalf("Data mismatch at position %d: expected %d, got %d", i, testData[i], b)
+					}
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Timeout waiting for message")
 			}
 
-			// Basic verification that data was written
-			t.Logf("Data size: %d, written bytes: %d, expected path: %s",
-				tt.dataSize, len(written), tt.expectedPath)
+			// Check if write was successful
+			select {
+			case err := <-errChan:
+				if err != nil {
+					t.Fatalf("Failed to write message: %v", err)
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Fatal("Write operation timed out")
+			}
+
+			// Basic verification that the correct path was used
+			t.Logf("Data size: %d, expected path: %s", tt.dataSize, tt.expectedPath)
 		})
 	}
 }
