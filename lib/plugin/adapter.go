@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log" // Added for HandlerAdapter
-	"os"
 )
 
 // Serializer defines the functions for serializing requests and deserializing responses for the client LoaderAdapter.
@@ -47,8 +46,6 @@ func (a *LoaderAdapter[Req, Resp]) Call(ctx context.Context, name string, reques
 		// loader.Call already formats plugin errors like "plugin error for service %s: %s"
 		return zeroResp, err
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG Adapter Call: Response received, unmarshaling\n")
 
 	// If loader.Call was successful, responseBytes contains the actual payload from the plugin.
 	// Now, deserialize it into the generic Resp type.

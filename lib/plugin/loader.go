@@ -32,6 +32,9 @@ type Loader struct {
 
 	// Add process monitoring
 	processExited atomic.Bool
+
+	// Add ready signal channel
+	readySignal chan struct{}
 }
 
 func NewLoader(path, name, version string) *Loader {
@@ -42,6 +45,7 @@ func NewLoader(path, name, version string) *Loader {
 		process:         nil,
 		multiplexer:     nil,
 		pendingRequests: make(map[uint32]chan []byte), // Changed uint64 to uint32
+		readySignal:     make(chan struct{}, 1),
 		// wg is initialized to its zero value, which is ready to use.
 	}
 }
@@ -63,99 +67,20 @@ func (l *Loader) Load(ctx context.Context) error {
 	// Use the provided context as parent, but create a child for internal control
 	l.loadCtx, l.cancelLoad = context.WithCancel(ctx)
 
-	// Start the message handling goroutine for request/response communication
-	recv, err := l.multiplexer.ReadMessage(l.loadCtx)
-	if err != nil {
-		p.Close()
-		l.cancelLoad()
-		return fmt.Errorf("failed to read message: %w", err)
-	}
-
-	// Wait for ready signal from plugin
-	select {
-	case readyMsg, ok := <-recv:
-		if !ok {
-			p.Close()
-			l.cancelLoad()
-			return fmt.Errorf("plugin closed before sending ready signal")
-		}
-
-		// Parse the ready message header
-		var readyHeader Header
-		if err := readyHeader.UnmarshalBinary(readyMsg.Data); err != nil {
-			p.Close()
-			l.cancelLoad()
-			return fmt.Errorf("failed to parse ready signal: %w", err)
-		}
-
-		// Verify it's a ready signal
-		if readyHeader.Name != "ready" {
-			p.Close()
-			l.cancelLoad()
-			return fmt.Errorf("expected ready signal, got service: %s", readyHeader.Name)
-		}
-
-	case <-l.loadCtx.Done():
-		p.Close()
-		l.cancelLoad()
-		return fmt.Errorf("context cancelled while waiting for ready signal")
-	case <-time.After(5 * time.Second):
-		p.Close()
-		l.cancelLoad()
-		return fmt.Errorf("timeout waiting for ready signal from plugin")
-	}
-
 	// Start process monitoring
 	l.wg.Add(1)
 	go l.monitorProcess()
 
+	// Start message handling goroutine FIRST
 	l.wg.Add(1)
-	go func() {
-		defer l.wg.Done()
-		defer func() {
-			l.requestMutex.Lock()
-			defer l.requestMutex.Unlock()
-			for id, ch := range l.pendingRequests {
-				// 채널이 이미 데이터를 받았는지 확인하고 안전하게 종료
-				select {
-				case <-ch:
-					// 이미 데이터가 있으면 그대로 둠
-				default:
-					// 데이터가 없으면 채널을 닫아서 대기 중인 goroutine에 신호
-					close(ch)
-				}
-				delete(l.pendingRequests, id)
-			}
-		}()
+	go l.handleMessages()
 
-		for {
-			select {
-			case <-l.loadCtx.Done():
-				return
-			case mesg, ok := <-recv:
-				if !ok {
-					return
-				}
-
-				requestID := mesg.Sequence // mesg.Sequence is now uint32
-
-				l.requestMutex.RLock()
-				responseChan, exists := l.pendingRequests[requestID]
-				l.requestMutex.RUnlock()
-
-				if exists {
-					select {
-					case responseChan <- mesg.Data:
-						// 성공적으로 전송됨
-					case <-l.loadCtx.Done():
-						return
-					default:
-						// 채널이 가득 찬 경우 - 호출자가 타임아웃될 것임
-					}
-				}
-			}
-		}
-	}()
+	// Wait for ready signal from plugin
+	if err := l.waitForReadySignal(); err != nil {
+		p.Close()
+		l.cancelLoad()
+		return err
+	}
 
 	return nil
 }
@@ -201,7 +126,7 @@ func (l *Loader) Close() error {
 // this error is returned, with the error message being the string representation
 // of the plugin's error payload.
 func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([]byte, error) {
-	fmt.Fprintf(os.Stderr, "DEBUG Call: Starting call for service '%s'\n", name)
+	fmt.Fprintf(os.Stderr, "DEBUG: Call started for service %s with payload length: %d\n", name, len(requestPayload))
 
 	if l.closed.Load() {
 		return nil, fmt.Errorf("loader is closed")
@@ -224,7 +149,10 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 		return nil, fmt.Errorf("failed to encode header: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG Call: Header marshaled, requesting lock\n")
+	fmt.Fprintf(os.Stderr, "DEBUG: Header marshaled successfully, length: %d\n", len(headerData))
+
+	// Generate request ID first (before acquiring lock)
+	requestID := l.generateRequestID()
 
 	l.requestMutex.Lock()
 	// Double-check closed status while holding lock
@@ -233,12 +161,11 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 		return nil, fmt.Errorf("loader closed before dispatching request")
 	}
 
-	requestID := l.generateRequestID()
 	responseChan := make(chan []byte, 1)
 	l.pendingRequests[requestID] = responseChan
 	l.requestMutex.Unlock()
 
-	fmt.Fprintf(os.Stderr, "DEBUG Call: Request ID %d generated, sending message\n", requestID)
+	fmt.Fprintf(os.Stderr, "DEBUG: Request ID generated: %d\n", requestID)
 
 	defer func() {
 		l.requestMutex.Lock()
@@ -246,17 +173,20 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 		l.requestMutex.Unlock()
 	}()
 
+	fmt.Fprintf(os.Stderr, "DEBUG: About to write message with sequence %d\n", requestID)
 	if err := l.multiplexer.WriteMessageWithSequence(ctx, requestID, headerData); err != nil {
 		return nil, fmt.Errorf("failed to write request message: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG Call: Message sent, waiting for response\n")
+	fmt.Fprintf(os.Stderr, "DEBUG: Message written successfully, waiting for response...\n")
 
 	select {
 	case responseData, ok := <-responseChan:
 		if !ok {
 			return nil, fmt.Errorf("response channel closed, loader shutting down")
 		}
+
+		fmt.Fprintf(os.Stderr, "DEBUG: Received response data, length: %d\n", len(responseData))
 
 		var responseHeader Header
 		if err := responseHeader.UnmarshalBinary(responseData); err != nil {
@@ -271,10 +201,13 @@ func Call(ctx context.Context, l *Loader, name string, requestPayload []byte) ([
 		}
 
 		// The payload is the success data. No gobDecode needed.
+		fmt.Fprintf(os.Stderr, "DEBUG: Call completed successfully for %s\n", name)
 		return responseHeader.Payload, nil
 	case <-ctx.Done():
+		fmt.Fprintf(os.Stderr, "DEBUG: Call context cancelled for %s\n", name)
 		return nil, ctx.Err()
 	case <-l.loadCtx.Done():
+		fmt.Fprintf(os.Stderr, "DEBUG: Loader shutting down during call for %s\n", name)
 		return nil, fmt.Errorf("loader is shutting down")
 	}
 }
@@ -304,10 +237,13 @@ func (l *Loader) monitorProcess() {
 func (l *Loader) generateRequestID() uint32 {
 	const maxAttempts = 100 // Prevent infinite loop in extreme cases
 
+	fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID starting\n")
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		id := l.requestID.Add(1)
+		fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID attempt %d, generated ID: %d\n", attempt, id)
 		if id == 0 {
 			// Skip 0 as it might be reserved
+			fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID skipping ID 0\n")
 			continue
 		}
 
@@ -316,16 +252,124 @@ func (l *Loader) generateRequestID() uint32 {
 		l.requestMutex.RUnlock()
 
 		if !exists {
+			fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID found unique ID: %d\n", id)
 			return id
 		}
+		fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID ID %d already exists, retrying\n", id)
 	}
 
 	// Fallback: if we can't find a unique ID after maxAttempts, use the current value
 	// This should be extremely rare unless there are millions of concurrent requests
-	return l.requestID.Load()
+	fallbackID := l.requestID.Load()
+	fmt.Fprintf(os.Stderr, "DEBUG: generateRequestID using fallback ID: %d\n", fallbackID)
+	return fallbackID
 }
 
 // IsProcessAlive returns true if the plugin process is still running
 func (l *Loader) IsProcessAlive() bool {
 	return !l.processExited.Load() && !l.closed.Load()
+}
+
+// waitForReadySignal waits for the ready signal from the plugin
+func (l *Loader) waitForReadySignal() error {
+	// Wait for handleMessages to process the ready signal
+	// This is now handled by handleMessages goroutine
+	select {
+	case <-l.readySignal:
+		return nil
+	case <-l.loadCtx.Done():
+		return fmt.Errorf("context cancelled while waiting for ready signal")
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout waiting for ready signal from plugin")
+	}
+}
+
+// handleMessages handles incoming messages from the plugin for request/response communication
+func (l *Loader) handleMessages() {
+	defer l.wg.Done()
+	defer func() {
+		l.requestMutex.Lock()
+		defer l.requestMutex.Unlock()
+		for id, ch := range l.pendingRequests {
+			// 채널이 이미 데이터를 받았는지 확인하고 안전하게 종료
+			select {
+			case <-ch:
+				// 이미 데이터가 있으면 그대로 둠
+			default:
+				// 데이터가 없으면 채널을 닫아서 대기 중인 goroutine에 신호
+				close(ch)
+			}
+			delete(l.pendingRequests, id)
+		}
+	}()
+
+	// Create a new message reader for handling request/response communication
+	recv, err := l.multiplexer.ReadMessage(l.loadCtx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "DEBUG: Failed to create ReadMessage channel in handleMessages: %v\n", err)
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG: handleMessages started, listening for responses...\n")
+
+	readyReceived := false
+
+	for {
+		select {
+		case <-l.loadCtx.Done():
+			fmt.Fprintf(os.Stderr, "DEBUG: handleMessages context cancelled\n")
+			return
+		case mesg, ok := <-recv:
+			if !ok {
+				fmt.Fprintf(os.Stderr, "DEBUG: handleMessages recv channel closed\n")
+				return
+			}
+
+			fmt.Fprintf(os.Stderr, "DEBUG: handleMessages received message with sequence %d, data length: %d\n", mesg.Sequence, len(mesg.Data))
+
+			// Handle ready signal first
+			if !readyReceived {
+				var readyHeader Header
+				if err := readyHeader.UnmarshalBinary(mesg.Data); err != nil {
+					fmt.Fprintf(os.Stderr, "DEBUG: Failed to parse first message as ready signal: %v\n", err)
+					continue
+				}
+
+				if readyHeader.Name == "ready" {
+					fmt.Fprintf(os.Stderr, "DEBUG: Ready signal received successfully\n")
+					readyReceived = true
+					// Signal that ready is received
+					select {
+					case l.readySignal <- struct{}{}:
+					default:
+						// Channel is full, ready signal already sent
+					}
+					continue
+				} else {
+					fmt.Fprintf(os.Stderr, "DEBUG: First message is not ready signal: %s\n", readyHeader.Name)
+				}
+			}
+
+			// Handle regular request/response messages
+			requestID := mesg.Sequence // mesg.Sequence is now uint32
+
+			l.requestMutex.RLock()
+			responseChan, exists := l.pendingRequests[requestID]
+			l.requestMutex.RUnlock()
+
+			if exists {
+				fmt.Fprintf(os.Stderr, "DEBUG: Found pending request for ID %d, forwarding response\n", requestID)
+				select {
+				case responseChan <- mesg.Data:
+					fmt.Fprintf(os.Stderr, "DEBUG: Successfully forwarded response for ID %d\n", requestID)
+				case <-l.loadCtx.Done():
+					return
+				default:
+					fmt.Fprintf(os.Stderr, "DEBUG: Response channel full for ID %d\n", requestID)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "DEBUG: No pending request found for ID %d\n", requestID)
+			}
+		}
+	}
 }

@@ -260,12 +260,17 @@ func (m *Module) SendReady(ctx context.Context) error {
 }
 
 func (m *Module) Listen(ctx context.Context) error {
+	log.Printf("DEBUG: Listen started, creating ReadMessage channel")
 	recv, err := m.multiplexer.ReadMessage(ctx)
 	if err != nil {
+		log.Printf("DEBUG: Failed to create ReadMessage channel: %v", err)
 		return fmt.Errorf("failed to read message: %w", err)
 	}
 
+	log.Printf("DEBUG: ReadMessage channel created, starting message loop")
+
 	for mesg := range recv {
+		log.Printf("DEBUG: Received message with ID %d, data length: %d", mesg.ID, len(mesg.Data))
 		var requestHeader Header
 		if err := requestHeader.UnmarshalBinary(mesg.Data); err != nil {
 			// Cannot reliably form a response if header is malformed. Log and continue.
@@ -273,6 +278,8 @@ func (m *Module) Listen(ctx context.Context) error {
 			// return fmt.Errorf("failed to decode header: %w", err) // This stops the module
 			continue // Continue to the next message
 		}
+
+		log.Printf("DEBUG: Decoded header: Name=%s, IsError=%t, Payload length=%d", requestHeader.Name, requestHeader.IsError, len(requestHeader.Payload))
 
 		m.handlerLock.RLock()
 		targetHandler, exists := m.handler[requestHeader.Name]
@@ -289,16 +296,21 @@ func (m *Module) Listen(ctx context.Context) error {
 			responseHeader.IsError = true
 			responseHeader.Payload = errPayload
 		} else {
+			log.Printf("DEBUG: Calling handler for %s with payload length: %d", requestHeader.Name, len(requestHeader.Payload))
 			appResult, criticalErr := targetHandler(requestHeader.Payload)
+
 			if criticalErr != nil {
-				log.Printf("critical error in handler for %s: %v", requestHeader.Name, criticalErr)
+				log.Printf("DEBUG: Critical error in handler for %s: %v", requestHeader.Name, criticalErr)
 				errMsg := fmt.Sprintf("critical internal error processing request for %s: %v", requestHeader.Name, criticalErr)
 				// No GOB encoding for error messages
 				errPayload := []byte(errMsg)
 				// encErr is removed
 				responseHeader.IsError = true
 				responseHeader.Payload = errPayload
+				log.Printf("DEBUG: Set error response for %s, payload length: %d", requestHeader.Name, len(errPayload))
 			} else {
+				log.Printf("DEBUG: Handler returned successfully for %s, IsError: %t, Payload length: %d",
+					requestHeader.Name, appResult.IsError, len(appResult.Payload))
 				responseHeader.IsError = appResult.IsError
 				responseHeader.Payload = appResult.Payload
 			}
@@ -310,11 +322,13 @@ func (m *Module) Listen(ctx context.Context) error {
 			continue // Try to process next message
 		}
 
+		log.Printf("DEBUG: Sending response for %s with ID %d, data length: %d", responseHeader.Name, mesg.ID, len(responseData))
 		if err := m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData); err != nil {
 			log.Printf("failed to write response for %s: %v", responseHeader.Name, err)
 			// This could be a more serious issue, potentially return err to stop Listen
 			return fmt.Errorf("failed to write response for %s: %w", responseHeader.Name, err)
 		}
+		log.Printf("DEBUG: Response sent successfully for %s", responseHeader.Name)
 	}
 
 	return nil
