@@ -1,52 +1,134 @@
-# Plugin.go 예제
+# Plugin.go Examples
 
-이 디렉토리는 `plugin.go` 라이브러리를 사용하는 실제 동작하는 예제들을 포함합니다.
+This directory contains practical working examples demonstrating the `plugin.go` library usage.
 
-## 구조
+## 📁 Structure
 
-- `simple.go` - 간단한 Echo 플러그인 사용 예제
-- `host/` - 복합 플러그인을 로드하고 호출하는 호스트 애플리케이션  
-- `plugins/` - 다양한 플러그인 구현 예제들
-  - `echo/` - 간단한 에코 플러그인
-  - `calculator/` - JSON 기반 계산기 플러그인
+- `simple.go` - Basic Echo plugin usage example
+- `host/` - Host application that loads and invokes multiple plugins
+- `plugins/` - Various plugin implementation examples
+  - `echo/` - Simple echo plugin
+  - `calculator/` - JSON-based calculator plugin
+  - `sleeper/` - Sleep operation plugin with timeout handling
 
-## 빠른 시작
+## 🚀 Quick Start
 
-1. 플러그인 빌드:
+1. **Build all plugins:**
    ```bash
    cd example
    go build -o plugins/echo/echo ./plugins/echo
    go build -o plugins/calculator/calculator ./plugins/calculator
+   go build -o plugins/sleeper/sleeper ./plugins/sleeper
    ```
 
-2. 간단한 예제 실행:
+2. **Run simple example:**
    ```bash
    go run simple.go
    ```
 
-3. 복합 예제 실행:
+3. **Run comprehensive host application:**
    ```bash
    go run ./host
    ```
 
-## 각 예제 설명
+## 📖 Example Descriptions
 
-### simple.go
-- 가장 기본적인 플러그인 사용 예제
-- Echo 플러그인을 로드하고 호출
-- JSON 어댑터 사용 시연
+### `simple.go`
+- **Purpose**: Most basic plugin usage demonstration
+- **Features**: 
+  - Loads and invokes Echo plugin
+  - Demonstrates JSON adapter usage
+  - Shows basic plugin lifecycle management
+- **Use Case**: Getting started with plugin.go
 
-### Echo Plugin  
-- 입력받은 메시지를 그대로 반환
-- JSON 기반 통신
-- 플러그인 개발의 기본 구조 시연
+### Echo Plugin (`plugins/echo/`)
+- **Purpose**: Simple message echoing service
+- **Features**:
+  - Returns input message with "Echo: " prefix
+  - JSON-based communication
+  - Demonstrates basic plugin development structure
+- **API**: 
+  - Input: `{"message": "hello"}`
+  - Output: `{"echo": "Echo: hello"}`
 
-### Calculator Plugin
-- JSON 기반 계산기 플러그인
-- 기본적인 수학 연산 지원 (덧셈, 뺄셈, 곱셈, 나눗셈)
-- 에러 핸들링 예제 포함
+### Calculator Plugin (`plugins/calculator/`)
+- **Purpose**: Mathematical operations service
+- **Features**:
+  - Supports basic math operations (add, subtract, multiply, divide)
+  - JSON-based request/response
+  - Comprehensive error handling
+- **API**:
+  - Input: `{"operation": "add", "a": 5, "b": 3}`
+  - Output: `{"result": 8}`
+  - Operations: `add`, `subtract`, `multiply`, `divide`
 
-### Host Application
-- 여러 플러그인을 동시에 사용하는 예제
-- 플러그인 간 독립성 시연
-- 실제 애플리케이션 시나리오
+### Sleeper Plugin (`plugins/sleeper/`)
+- **Purpose**: Demonstrates long-running operations and timeout handling
+- **Features**:
+  - Simulates work by sleeping for specified duration
+  - Shows context cancellation support
+  - Timeout and graceful shutdown handling
+- **API**:
+  - Input: `{"message": "work", "sleep_time": 2}`
+  - Output: `{"message": "work completed", "slept_time": 2}`
+
+### Host Application (`host/`)
+- **Purpose**: Real-world application scenario demonstration
+- **Features**:
+  - Loads and manages multiple plugins simultaneously
+  - Demonstrates plugin independence and isolation
+  - Shows proper resource management and cleanup
+  - Includes force shutdown and timeout scenarios
+- **Components**:
+  - `main.go` - Main application entry point
+  - `echo.go` - Echo plugin integration
+  - `calculator.go` - Calculator plugin integration
+  - `sleeper.go` - Sleeper plugin integration
+  - `force_shutdown.go` - Shutdown handling demonstration
+
+## 🔧 Building and Running
+
+### Prerequisites
+- Go 1.19 or later
+- Unix-like environment (Linux, macOS)
+
+### Build Commands
+```bash
+# Build individual plugins
+go build -o plugins/echo/echo ./plugins/echo
+go build -o plugins/calculator/calculator ./plugins/calculator
+go build -o plugins/sleeper/sleeper ./plugins/sleeper
+
+# Or build all at once
+make build-examples  # if Makefile exists
+```
+
+### Running Examples
+```bash
+# Simple echo test
+go run simple.go
+
+# Comprehensive test suite
+go run ./host
+
+# Individual plugin tests (if needed)
+./plugins/echo/echo
+./plugins/calculator/calculator
+./plugins/sleeper/sleeper
+```
+
+## 🎯 Learning Path
+
+1. **Start with `simple.go`** - Understand basic plugin loading and invocation
+2. **Examine plugin implementations** - See how plugins are structured
+3. **Run host application** - Experience multi-plugin scenarios
+4. **Modify examples** - Experiment with your own plugin logic
+
+## 🔍 Key Concepts Demonstrated
+
+- **Plugin Lifecycle**: Loading, invoking, and cleanup
+- **JSON Communication**: Standardized request/response format
+- **Context Management**: Timeout and cancellation handling
+- **Error Handling**: Graceful error propagation and recovery
+- **Concurrency**: Multiple plugins running independently
+- **Resource Management**: Proper cleanup and shutdown procedures
