@@ -100,11 +100,41 @@ func (n *nodeWrapper) ReadMessage(ctx context.Context) (chan *OldMessage, error)
 	return oldCh, nil
 }
 
+// MessageType represents the type of message being sent
+type MessageType uint8
+
+const (
+	MessageTypeRequest  MessageType = 0x01 // Request message (expects response)
+	MessageTypeResponse MessageType = 0x02 // Response message (response to request)
+	MessageTypeNotify   MessageType = 0x03 // Notification message (no response expected)
+	MessageTypeAck      MessageType = 0x04 // Acknowledgment message
+	MessageTypeError    MessageType = 0x05 // Error message
+)
+
+// String returns the string representation of MessageType
+func (mt MessageType) String() string {
+	switch mt {
+	case MessageTypeRequest:
+		return "Request"
+	case MessageTypeResponse:
+		return "Response"
+	case MessageTypeNotify:
+		return "Notify"
+	case MessageTypeAck:
+		return "Ack"
+	case MessageTypeError:
+		return "Error"
+	default:
+		return "Unknown"
+	}
+}
+
 // Header represents the message header containing service name, error status, and payload.
 type Header struct {
-	Name    string
-	IsError bool
-	Payload []byte
+	Name        string
+	IsError     bool
+	MessageType MessageType
+	Payload     []byte
 }
 
 // MarshalBinary encodes the header into binary format.
@@ -131,6 +161,11 @@ func (h *Header) MarshalBinary() ([]byte, error) {
 	}
 	if err := binary.Write(&buffer, binary.BigEndian, isErrorByte); err != nil {
 		return nil, fmt.Errorf("failed to write IsError flag: %w", err)
+	}
+
+	// Write MessageType
+	if err := binary.Write(&buffer, binary.BigEndian, uint8(h.MessageType)); err != nil {
+		return nil, fmt.Errorf("failed to write message type: %w", err)
 	}
 
 	// Write Payload length
@@ -170,6 +205,13 @@ func (h *Header) UnmarshalBinary(data []byte) error {
 		return fmt.Errorf("failed to read IsError flag: %w", err)
 	}
 	h.IsError = isErrorByte == 1
+
+	// Read MessageType
+	var messageTypeByte uint8
+	if err := binary.Read(buffer, binary.BigEndian, &messageTypeByte); err != nil {
+		return fmt.Errorf("failed to read message type: %w", err)
+	}
+	h.MessageType = MessageType(messageTypeByte)
 
 	// Read Payload length
 	var payloadLen uint32
@@ -269,9 +311,10 @@ func RegisterHandler(m *Module, name string, handler func(requestPayload []byte)
 // SendReady sends a ready message to indicate the plugin is ready to receive requests.
 func (m *Module) SendReady(ctx context.Context) error {
 	readyHeader := Header{
-		Name:    "ready",
-		IsError: false,
-		Payload: []byte("ready"),
+		Name:        "ready",
+		IsError:     false,
+		MessageType: MessageTypeAck,
+		Payload:     []byte("ready"),
 	}
 
 	readyData, err := readyHeader.MarshalBinary()
@@ -370,9 +413,10 @@ func (m *Module) Listen(ctx context.Context) error {
 
 					// Send immediate ACK to let host know we received the shutdown signal
 					ackHeader := Header{
-						Name:    "shutdown_ack",
-						IsError: false,
-						Payload: []byte("graceful shutdown started, waiting for jobs to complete"),
+						Name:        "shutdown_ack",
+						IsError:     false,
+						MessageType: MessageTypeAck,
+						Payload:     []byte("graceful shutdown started, waiting for jobs to complete"),
 					}
 
 					if ackData, err := ackHeader.MarshalBinary(); err == nil {
@@ -408,9 +452,10 @@ func (m *Module) Listen(ctx context.Context) error {
 
 					// Send immediate acknowledgment
 					ackHeader := Header{
-						Name:    "force_shutdown_ack",
-						IsError: false,
-						Payload: []byte("force shutting down"),
+						Name:        "force_shutdown_ack",
+						IsError:     false,
+						MessageType: MessageTypeAck,
+						Payload:     []byte("force shutting down"),
 					}
 
 					if ackData, err := ackHeader.MarshalBinary(); err == nil {
@@ -423,9 +468,10 @@ func (m *Module) Listen(ctx context.Context) error {
 					if err := m.SendReady(listenCtx); err == nil {
 						// Send acknowledgment that we processed the request_ready
 						ackHeader := Header{
-							Name:    "request_ready_ack",
-							IsError: false,
-							Payload: []byte("ready signal sent in response to request"),
+							Name:        "request_ready_ack",
+							IsError:     false,
+							MessageType: MessageTypeAck,
+							Payload:     []byte("ready signal sent in response to request"),
 						}
 						if ackData, err := ackHeader.MarshalBinary(); err == nil {
 							m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, ackData)
@@ -439,9 +485,10 @@ func (m *Module) Listen(ctx context.Context) error {
 			if m.IsShutdown() {
 				// Send immediate error response
 				errorHeader := Header{
-					Name:    header.Name,
-					IsError: true,
-					Payload: []byte("service unavailable: graceful shutdown in progress"),
+					Name:        header.Name,
+					IsError:     true,
+					MessageType: MessageTypeError,
+					Payload:     []byte("service unavailable: graceful shutdown in progress"),
 				}
 				if errorData, err := errorHeader.MarshalBinary(); err == nil {
 					m.multiplexer.WriteMessageWithSequence(listenCtx, mesg.ID, errorData)
@@ -497,9 +544,10 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 	// Exit immediately only for force shutdown
 	if m.IsForceShutdown() {
 		responseHeader := Header{
-			Name:    requestHeader.Name,
-			IsError: true,
-			Payload: []byte("service unavailable: force shutdown"),
+			Name:        requestHeader.Name,
+			IsError:     true,
+			MessageType: MessageTypeError,
+			Payload:     []byte("service unavailable: force shutdown"),
 		}
 		if responseData, err := responseHeader.MarshalBinary(); err == nil {
 			m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData)
@@ -518,6 +566,7 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 		errMsg := fmt.Sprintf("no handler registered for service: %s", requestHeader.Name)
 		errPayload := []byte(errMsg)
 		responseHeader.IsError = true
+		responseHeader.MessageType = MessageTypeError
 		responseHeader.Payload = errPayload
 	} else {
 		// Execute handler - already started tasks complete even during graceful shutdown
@@ -527,9 +576,15 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 			errMsg := fmt.Sprintf("critical internal error processing request for %s: %v", requestHeader.Name, criticalErr)
 			errPayload := []byte(errMsg)
 			responseHeader.IsError = true
+			responseHeader.MessageType = MessageTypeError
 			responseHeader.Payload = errPayload
 		} else {
 			responseHeader.IsError = appResult.IsError
+			if appResult.IsError {
+				responseHeader.MessageType = MessageTypeError
+			} else {
+				responseHeader.MessageType = MessageTypeResponse
+			}
 			responseHeader.Payload = appResult.Payload
 		}
 	}
@@ -544,4 +599,81 @@ func (m *Module) processMessage(ctx context.Context, mesg *OldMessage) {
 	if err := m.multiplexer.WriteMessageWithSequence(ctx, mesg.ID, responseData); err != nil {
 		// Log error to stderr if possible, but don't fail the entire listener
 	}
+}
+
+// SendMessage sends a message to the loader without expecting a response
+func (m *Module) SendMessage(ctx context.Context, name string, payload []byte) error {
+	header := Header{
+		Name:        name,
+		IsError:     false,
+		MessageType: MessageTypeNotify,
+		Payload:     payload,
+	}
+
+	headerData, err := header.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("failed to marshal header: %w", err)
+	}
+
+	return m.multiplexer.WriteMessage(ctx, headerData)
+}
+
+// SendErrorMessage sends an error message to the loader
+func (m *Module) SendErrorMessage(ctx context.Context, name string, payload []byte) error {
+	header := Header{
+		Name:        name,
+		IsError:     true,
+		MessageType: MessageTypeError,
+		Payload:     payload,
+	}
+
+	headerData, err := header.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("failed to marshal header: %w", err)
+	}
+
+	return m.multiplexer.WriteMessage(ctx, headerData)
+}
+
+// SendRequest sends a request to the loader and waits for a response
+func (m *Module) SendRequest(ctx context.Context, name string, payload []byte) ([]byte, error) {
+	header := Header{
+		Name:        name,
+		IsError:     false,
+		MessageType: MessageTypeRequest,
+		Payload:     payload,
+	}
+
+	headerData, err := header.MarshalBinary()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal header: %w", err)
+	}
+
+	// Generate a unique sequence ID for this request
+	sequenceID := m.generateSequenceID()
+
+	// Create a channel to receive the response
+	responseChannel := make(chan []byte, 1)
+	defer close(responseChannel)
+
+	// Store the response channel (note: this is a simple implementation;
+	// a production version might need a more sophisticated pending request system)
+
+	// Send the request
+	if err := m.multiplexer.WriteMessageWithSequence(ctx, sequenceID, headerData); err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+
+	// Since we don't have a built-in response tracking system in Module,
+	// we'll implement a simple timeout-based approach
+	// In a real implementation, you'd want to add response tracking to Module
+
+	// For now, return an error indicating this feature needs implementation
+	return nil, fmt.Errorf("SendRequest not fully implemented - response tracking needed")
+}
+
+// generateSequenceID generates a unique sequence ID for requests
+func (m *Module) generateSequenceID() uint32 {
+	// This is a simple implementation; in production you might want something more sophisticated
+	return uint32(time.Now().UnixNano() & 0xFFFFFFFF)
 }

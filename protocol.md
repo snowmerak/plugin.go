@@ -56,10 +56,21 @@ Message payload is composed as follows:
 ### Binary Format
 
 ```go
+type MessageType uint8
+
+const (
+    MessageTypeRequest    MessageType = 0x01 // Request message (expects response)
+    MessageTypeResponse   MessageType = 0x02 // Response message (response to request)
+    MessageTypeNotify     MessageType = 0x03 // Notification message (no response expected)
+    MessageTypeAck        MessageType = 0x04 // Acknowledgment message
+    MessageTypeError      MessageType = 0x05 // Error message
+)
+
 type Header struct {
-    Name    string  // Service name
-    IsError bool    // Error flag
-    Payload []byte  // Actual data payload
+    Name        string      // Service name
+    IsError     bool        // Error flag
+    MessageType MessageType // Message type (Request/Response/Notify/Ack/Error)
+    Payload     []byte      // Actual data payload
 }
 ```
 
@@ -70,6 +81,7 @@ type Header struct {
 | Name Length | 4 bytes | Service name length (BigEndian uint32) |
 | Name | Variable | Service name (UTF-8 string) |
 | IsError | 1 byte | Error flag (0=success, 1=error) |
+| MessageType | 1 byte | Message type (0x01=Request, 0x02=Response, 0x03=Notify, 0x04=Ack, 0x05=Error) |
 | Payload Length | 4 bytes | Payload length (BigEndian uint32) |
 | Payload | Variable | Actual data |
 

@@ -43,5 +43,11 @@ func main() {
 		log.Printf("Ready request test failed: %v", err)
 	}
 
+	// Heartbeat Plugin test
+	fmt.Println("\n--- Heartbeat Plugin Test ---")
+	if err := testHeartbeatPlugin(ctx); err != nil {
+		log.Printf("Heartbeat plugin test failed: %v", err)
+	}
+
 	fmt.Println("\n=== All Tests Completed ===")
 }

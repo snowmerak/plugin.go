@@ -13,41 +13,46 @@ func TestHeader_MarshalUnmarshal(t *testing.T) {
 		{
 			name: "Simple header",
 			header: Header{
-				Name:    "test",
-				IsError: false,
-				Payload: []byte("hello world"),
+				Name:        "test",
+				IsError:     false,
+				MessageType: MessageTypeRequest,
+				Payload:     []byte("hello world"),
 			},
 		},
 		{
 			name: "Error header",
 			header: Header{
-				Name:    "error_service",
-				IsError: true,
-				Payload: []byte("error message"),
+				Name:        "error_service",
+				IsError:     true,
+				MessageType: MessageTypeError,
+				Payload:     []byte("error message"),
 			},
 		},
 		{
 			name: "Empty payload",
 			header: Header{
-				Name:    "empty",
-				IsError: false,
-				Payload: []byte{},
+				Name:        "empty",
+				IsError:     false,
+				MessageType: MessageTypeNotify,
+				Payload:     []byte{},
 			},
 		},
 		{
 			name: "Long name",
 			header: Header{
-				Name:    "very_long_service_name_for_testing_purposes",
-				IsError: false,
-				Payload: []byte("test data"),
+				Name:        "very_long_service_name_for_testing_purposes",
+				IsError:     false,
+				MessageType: MessageTypeResponse,
+				Payload:     []byte("test data"),
 			},
 		},
 		{
 			name: "Large payload",
 			header: Header{
-				Name:    "large",
-				IsError: false,
-				Payload: make([]byte, 10000), // 10KB payload
+				Name:        "large",
+				IsError:     false,
+				MessageType: MessageTypeAck,
+				Payload:     make([]byte, 10000), // 10KB payload
 			},
 		},
 		{
