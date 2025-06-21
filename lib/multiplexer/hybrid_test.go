@@ -1,6 +1,7 @@
 package multiplexer
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"sync"
@@ -174,8 +175,11 @@ func TestHybridNodeConcurrency(t *testing.T) {
 	const numGoroutines = 10
 	const messagesPerGoroutine = 50
 
-	readerBuf, writerBuf := createConnectedBuffers()
-	node := NewHybridNode(readerBuf, writerBuf)
+	// Use bytes.Buffer for unlimited writing capacity to test concurrency
+	// without being blocked by pipe buffer limits
+	var writer bytes.Buffer
+	reader := &bytes.Buffer{}
+	node := NewHybridNode(reader, &writer)
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
@@ -217,13 +221,21 @@ func TestHybridNodeConcurrency(t *testing.T) {
 	if errorCount > 0 {
 		t.Fatalf("Encountered %d errors during concurrent writes", errorCount)
 	}
+
+	// Verify that data was written (basic sanity check)
+	if writer.Len() == 0 {
+		t.Fatal("No data was written to buffer")
+	}
+
+	t.Logf("Successfully wrote %d bytes from %d concurrent goroutines", writer.Len(), numGoroutines)
 }
 
 // TestHybridNodeErrorHandling tests error scenarios
 func TestHybridNodeErrorHandling(t *testing.T) {
 	t.Run("ContextCancellation", func(t *testing.T) {
-		readerBuf, writerBuf := createConnectedBuffers()
-		node := NewHybridNode(readerBuf, writerBuf)
+		var writer bytes.Buffer
+		reader := &bytes.Buffer{}
+		node := NewHybridNode(reader, &writer)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
@@ -275,8 +287,9 @@ func TestHybridNodeResourceCleanup(t *testing.T) {
 
 // TestHybridNodeMetrics tests metrics collection
 func TestHybridNodeMetrics(t *testing.T) {
-	readerBuf, writerBuf := createConnectedBuffers()
-	node := NewHybridNode(readerBuf, writerBuf)
+	var writer bytes.Buffer
+	reader := &bytes.Buffer{}
+	node := NewHybridNode(reader, &writer)
 	ctx := context.Background()
 
 	// Write some messages

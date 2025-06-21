@@ -153,6 +153,13 @@ func (n *HybridNode) WriteMessageWithSequenceHybrid(ctx context.Context, seq uin
 
 	done := ctx.Done()
 
+	// Check context before starting
+	select {
+	case <-done:
+		return ctx.Err()
+	default:
+	}
+
 	// Start message
 	if err := n.writeHybrid(MessageHeaderTypeStart, seq, nil, useFastPath); err != nil {
 		return fmt.Errorf("failed to write start: %w", err)
