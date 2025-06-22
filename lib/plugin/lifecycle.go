@@ -5,14 +5,24 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/snowmerak/plugin.go/lib/multiplexer"
 	"github.com/snowmerak/plugin.go/lib/process"
 )
 
-// NewLoader creates a new Loader instance with the specified path, name, and version.
+// NewLoader creates a new Loader instance with the specified path, name, and version using default stdio communication.
 func NewLoader(path, name, version string) *Loader {
+	return NewLoaderWithOptions(path, name, version, DefaultLoaderOptions())
+}
+
+// NewLoaderWithOptions creates a new Loader instance with custom communication options.
+func NewLoaderWithOptions(path, name, version string, options *LoaderOptions) *Loader {
+	if options == nil {
+		options = DefaultLoaderOptions()
+	}
+
 	l := &Loader{
 		Path:             path,
 		Name:             name,
@@ -25,6 +35,8 @@ func NewLoader(path, name, version string) *Loader {
 		forceShutdownAck: make(chan struct{}, 1),
 		messageHandlers:  make(map[string]MessageHandler),
 		requestHandlers:  make(map[string]RequestHandler),
+		// Store options for use in Load method
+		options: options,
 		// wg is initialized to its zero value, which is ready to use.
 	}
 
@@ -40,21 +52,23 @@ func (l *Loader) Load(ctx context.Context) error {
 		return fmt.Errorf("loader is closed")
 	}
 
-	p, err := process.Fork(l.Path)
+	// Create communication channel based on options
+	reader, writer, err := l.createCommunicationChannel(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to fork process: %w", err)
+		return fmt.Errorf("failed to create communication channel: %w", err)
 	}
-	l.process = p
 
-	mux := multiplexer.New(p.Stdout(), p.Stdin())
+	mux := multiplexer.New(reader, writer)
 	l.multiplexer = mux
 
 	// Use the provided context as parent, but create a child for internal control
 	l.loadCtx, l.cancelLoad = context.WithCancel(ctx)
 
-	// Start process monitoring
-	l.wg.Add(1)
-	go l.monitorProcess()
+	// Start process monitoring (if using stdio)
+	if l.options.CommunicationType == CommunicationTypeStdio && l.process != nil {
+		l.wg.Add(1)
+		go l.monitorProcess()
+	}
 
 	// Start message handling goroutine FIRST
 	l.wg.Add(1)
@@ -62,7 +76,12 @@ func (l *Loader) Load(ctx context.Context) error {
 
 	// Wait for ready signal from plugin
 	if err := l.waitForReadySignal(); err != nil {
-		p.Close()
+		if l.process != nil {
+			l.process.Close()
+		}
+		if l.provider != nil {
+			l.provider.Close()
+		}
 		l.cancelLoad()
 		return err
 	}
@@ -213,4 +232,62 @@ func (l *Loader) monitorProcess() {
 // IsProcessAlive returns true if the plugin process is still running
 func (l *Loader) IsProcessAlive() bool {
 	return !l.processExited.Load() && !l.closed.Load()
+}
+
+// createCommunicationChannel creates the appropriate communication channel based on options
+func (l *Loader) createCommunicationChannel(ctx context.Context) (io.Reader, io.Writer, error) {
+	switch l.options.CommunicationType {
+	case CommunicationTypeStdio:
+		// Use traditional stdio via process forking
+		p, err := process.Fork(l.Path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to fork process: %w", err)
+		}
+		l.process = p
+		return p.Stdout(), p.Stdin(), nil
+
+	case CommunicationTypeHSQ:
+		// Use HSQ shared memory communication
+		if l.options.HSQConfig == nil {
+			return nil, nil, fmt.Errorf("HSQ config is required for HSQ communication")
+		}
+
+		// Start the plugin process first
+		p, err := process.Fork(l.Path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to fork process: %w", err)
+		}
+		l.process = p
+
+		// Create HSQ communication channel
+		provider, err := NewHSQProvider(l.options.HSQConfig)
+		if err != nil {
+			if l.process != nil {
+				l.process.Close()
+			}
+			return nil, nil, fmt.Errorf("failed to create HSQ provider: %w", err)
+		}
+		l.provider = provider
+		return provider.CreateChannel(ctx, l.Path)
+
+	case CommunicationTypeCustom:
+		// Use custom provider
+		if l.options.Provider == nil {
+			return nil, nil, fmt.Errorf("custom provider is required for custom communication")
+		}
+
+		// Start the plugin process first
+		p, err := process.Fork(l.Path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to fork process: %w", err)
+		}
+		l.process = p
+
+		// Create custom communication channel
+		l.provider = l.options.Provider
+		return l.provider.CreateChannel(ctx, l.Path)
+
+	default:
+		return nil, nil, fmt.Errorf("unsupported communication type: %v", l.options.CommunicationType)
+	}
 }

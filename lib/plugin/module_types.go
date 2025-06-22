@@ -171,4 +171,8 @@ type Module struct {
 	forceShutdownOnce sync.Once
 	activeJobs        sync.WaitGroup
 	activeJobCount    int64 // atomic counter for active jobs
+
+	// Communication options and provider
+	options  *ModuleOptions
+	provider CommunicationProvider
 }

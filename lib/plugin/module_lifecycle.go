@@ -5,6 +5,8 @@
 package plugin
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"os"
 	"sync/atomic"
@@ -12,25 +14,85 @@ import (
 	"github.com/snowmerak/plugin.go/lib/multiplexer"
 )
 
-// New creates a new Module instance with the specified reader and writer.
+// New creates a new Module instance with the specified reader and writer using default stdio communication.
 // If reader or writer are nil, they default to os.Stdin and os.Stdout respectively.
 func New(reader io.Reader, writer io.Writer) *Module {
-	if reader == nil {
-		reader = os.Stdin
+	return NewWithOptions(reader, writer, DefaultModuleOptions())
+}
+
+// NewWithOptions creates a new Module instance with custom communication options.
+// If reader or writer are nil, they default to os.Stdin and os.Stdout respectively.
+func NewWithOptions(reader io.Reader, writer io.Writer, options *ModuleOptions) *Module {
+	if options == nil {
+		options = DefaultModuleOptions()
 	}
 
-	if writer == nil {
-		writer = os.Stdout
+	// Handle custom providers that need to create their own communication channels
+	if options.CommunicationType == CommunicationTypeCustom && options.Provider != nil {
+		// For custom providers, use the provider to create the communication channel
+		providerReader, providerWriter, err := options.Provider.CreateChannel(context.Background(), "")
+		if err != nil {
+			// If provider fails, fall back to provided reader/writer or stdio
+			if reader == nil {
+				reader = os.Stdin
+			}
+			if writer == nil {
+				writer = os.Stdout
+			}
+		} else {
+			reader = providerReader
+			writer = providerWriter
+		}
+	} else {
+		// For stdio and other types, use provided reader/writer or default to stdio
+		if reader == nil {
+			reader = os.Stdin
+		}
+
+		if writer == nil {
+			writer = os.Stdout
+		}
 	}
+
 	// Use the general multiplexer API which uses HybridNode
 	mux := multiplexer.New(reader, writer)
 
-	return &Module{
+	module := &Module{
 		multiplexer:       &nodeWrapper{multiplexer: mux},
 		handler:           make(map[string]Handler),
 		shutdownChan:      make(chan struct{}),
 		forceShutdownChan: make(chan struct{}),
+		options:           options,
 	}
+
+	// Store provider reference for cleanup
+	if options.CommunicationType == CommunicationTypeCustom && options.Provider != nil {
+		module.provider = options.Provider
+	}
+
+	return module
+}
+
+// NewFromHSQ creates a new Module instance using HSQ shared memory communication.
+func NewFromHSQ(config *HSQConfig) (*Module, error) {
+	options := WithHSQModule(config)
+
+	// For HSQ, we don't use traditional stdin/stdout, so we create a placeholder adapter
+	provider, err := NewHSQProvider(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HSQ provider: %w", err)
+	}
+
+	// Create reader/writer from HSQ provider
+	reader, writer, err := provider.CreateChannel(context.Background(), "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HSQ communication channel: %w", err)
+	}
+
+	module := NewWithOptions(reader, writer, options)
+	module.provider = provider
+
+	return module, nil
 }
 
 // NewStd creates a new Module instance using standard input and output.

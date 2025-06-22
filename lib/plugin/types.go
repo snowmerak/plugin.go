@@ -74,4 +74,8 @@ type Loader struct {
 
 	// Request handlers for incoming requests from module that expect responses
 	requestHandlers map[string]RequestHandler
+
+	// Communication options and provider
+	options  *LoaderOptions
+	provider CommunicationProvider
 }
