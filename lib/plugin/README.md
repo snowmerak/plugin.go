@@ -57,6 +57,48 @@ The plugin package has been refactored to improve code organization and maintain
 - **`header_test.go`** (276 lines) - Header marshaling/unmarshaling tests
 - **`integration_test.go`** (259 lines) - Integration tests
 
+## Module Package Structure
+
+The Module system has been organized into focused files for better maintainability:
+
+### Module Files:
+- **`module.go`** (14 lines) - Main entry point with package documentation
+- **`module_types.go`** (174 lines) - Core types, interfaces, and message definitions
+  - MessageType enum and constants
+  - Header struct with binary marshaling/unmarshaling
+  - AppHandlerResult, Handler types
+  - NodeInterface definition
+  - Module struct definition
+- **`module_compat.go`** (98 lines) - Backward compatibility wrappers
+  - oldNodeWrapper for legacy Node interface
+  - nodeWrapper for new multiplexer API
+  - OldMessage type for backward compatibility
+- **`module_lifecycle.go`** (78 lines) - Module creation and shutdown management
+  - New() and NewStd() constructors
+  - Shutdown and ForceShutdown methods
+  - Status checking methods
+- **`module_handlers.go`** (30 lines) - Handler registration and management
+  - RegisterHandler function for service registration
+- **`module_processing.go`** (249 lines) - Message listening and processing
+  - Listen() method with main message loop
+  - processMessage() for individual message handling
+  - Shutdown signal processing
+- **`module_communication.go`** (105 lines) - External communication methods
+  - SendReady() for ready signal
+  - SendMessage() for notifications
+  - SendErrorMessage() for error notifications
+  - SendRequest() for request-response pattern
+
+### Benefits of Module Separation:
+- **Single Responsibility**: Each file has a clear, focused purpose
+- **Easier Maintenance**: Developers can quickly locate relevant code
+- **Better Testing**: Focused files enable more targeted unit tests
+- **Improved Readability**: Smaller files are easier to understand
+- **Reduced Merge Conflicts**: Changes are more likely to be in separate files
+- **Backward Compatibility**: All existing APIs remain unchanged
+
+**Total lines reduced from 679 to manageable chunks, with the largest file being only 249 lines.**
+
 ## Benefits of This Structure
 
 1. **Improved Maintainability**: Each file has a focused responsibility
