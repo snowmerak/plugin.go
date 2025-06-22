@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/snowmerak/plugin.go/lib/plugin"
 )
@@ -16,19 +18,46 @@ func echoFunction(input []byte) ([]byte, bool) {
 }
 
 func main() {
-	// stdio 통신으로 Module 생성 (HSQ 대신)
-	module := plugin.NewStd()
+	fmt.Println("=== HSQ Echo Plugin Module ===")
+
+	// HSQ 설정 (Host와 동일한 설정 사용)
+	hsqConfig := &plugin.HSQConfig{
+		SharedMemoryName: "/plugin_hsq_example",
+		RingSize:         256,
+		MaxMessageSize:   4096,
+		IsHost:           false, // Plugin 모듈이므로 false
+	}
+
+	// HSQ 옵션으로 Module 생성
+	module, err := plugin.NewFromHSQ(hsqConfig)
+	if err != nil {
+		log.Fatalf("Failed to create HSQ module: %v", err)
+	}
 
 	// Echo 함수 등록
 	plugin.RegisterHandler(module, "echo", echoFunction)
 
-	// Context 생성
-	ctx := context.Background()
+	fmt.Println("HSQ module initialized with echo function")
+	fmt.Println("Waiting for HSQ communication...")
 
-	// 모듈 실행 (Listen 사용)
+	// Context 생성
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// 종료 신호 처리
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		fmt.Println("\nReceived shutdown signal, closing module...")
+		cancel()
+	}()
+
+	// 모듈 실행
 	if err := module.Listen(ctx); err != nil {
 		log.Fatalf("Module listen failed: %v", err)
 	}
 
-	os.Exit(0)
+	fmt.Println("HSQ Echo module shutdown complete")
 }

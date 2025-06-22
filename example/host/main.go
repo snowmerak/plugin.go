@@ -49,5 +49,11 @@ func main() {
 		log.Printf("Heartbeat plugin test failed: %v", err)
 	}
 
+	// HSQ Echo Plugin test
+	fmt.Println("\n--- HSQ Echo Plugin Test ---")
+	if err := testHSQEchoPlugin(ctx); err != nil {
+		log.Printf("HSQ Echo plugin test failed: %v", err)
+	}
+
 	fmt.Println("\n=== All Tests Completed ===")
 }
