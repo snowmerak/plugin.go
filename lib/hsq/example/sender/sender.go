@@ -9,10 +9,10 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/lemon-mint/hsq/internal/example/common"
-	"github.com/lemon-mint/hsq/internal/mmap"
-	"github.com/lemon-mint/hsq/internal/offheap/ring"
-	"github.com/lemon-mint/hsq/internal/shm"
+	"github.com/snowmerak/plugin.go/lib/hsq/example/common"
+	"github.com/snowmerak/plugin.go/lib/hsq/mmap"
+	"github.com/snowmerak/plugin.go/lib/hsq/offheap/ring"
+	"github.com/snowmerak/plugin.go/lib/hsq/shm"
 )
 
 func main() {

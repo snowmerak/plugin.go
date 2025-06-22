@@ -5,7 +5,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/lemon-mint/hsq/internal/offheap/bufring"
+	"github.com/snowmerak/plugin.go/lib/hsq/offheap/bufring"
 )
 
 func TestBufferRing(t *testing.T) {

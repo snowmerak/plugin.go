@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lemon-mint/hsq/internal/protocol/itrie"
+	"github.com/snowmerak/plugin.go/lib/hsq/protocol/itrie"
 )
 
 func TestITrie_InsertAndSearch(t *testing.T) {
